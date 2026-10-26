@@ -1,0 +1,20 @@
+name: CoordinateApp
+options:
+  bundleIdPrefix: com.coordinate.local
+settings:
+  base:
+    IPHONEOS_DEPLOYMENT_TARGET: '16.0'
+    SWIFT_VERSION: '5.0'
+    CODE_SIGNING_ALLOWED: 'NO'
+targets:
+  CoordinateApp:
+    type: application
+    platform: iOS
+    sources: [CoordinateApp]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.coordinate.local.app
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: '用于在屏幕上显示当前经纬度和定位精度。'
+        TARGETED_DEVICE_FAMILY: '1'
+        CODE_SIGNING_ALLOWED: 'NO'
