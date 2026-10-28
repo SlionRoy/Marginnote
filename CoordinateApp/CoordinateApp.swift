@@ -53,13 +53,7 @@ struct ContentView: View {
                         .buttonStyle(.bordered)
                         .disabled(model.location == nil)
                     Spacer()
-                    if let loc = model.location {
-                        Button("在苹果地图中打开") {
-                            let item = MKMapItem(placemark: MKPlacemark(coordinate: loc.coordinate))
-                            item.name = "我的当前位置"
-                            item.openInMaps(launchOptions: nil)
-                        }.buttonStyle(.bordered)
-                    }
+
                 }
                 Image(systemName: "location.circle.fill").font(.system(size: 36)).foregroundStyle(.blue)
                 Text(model.status).font(.headline)
