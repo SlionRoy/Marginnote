@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreLocation
+import MapKit
 
 @main
 struct CoordinateApp: App {
@@ -38,10 +39,29 @@ final class LocationModel: NSObject, ObservableObject, CLLocationManagerDelegate
 
 struct ContentView: View {
     @StateObject private var model = LocationModel()
+    @State private var region = MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 35.6812, longitude: 139.7671), span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01))
     var body: some View {
         NavigationStack {
-            VStack(spacing: 22) {
-                Image(systemName: "location.circle.fill").font(.system(size: 64)).foregroundStyle(.blue)
+            ScrollView {
+              VStack(spacing: 16) {
+                Map(coordinateRegion: $region, showsUserLocation: true)
+                    .frame(height: 300)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .accessibilityLabel("苹果地图，显示当前所在位置")
+                HStack {
+                    Button("地图居中") { centerOnUser() }
+                        .buttonStyle(.bordered)
+                        .disabled(model.location == nil)
+                    Spacer()
+                    if let loc = model.location {
+                        Button("在苹果地图中打开") {
+                            let item = MKMapItem(placemark: MKPlacemark(coordinate: loc.coordinate))
+                            item.name = "我的当前位置"
+                            item.openInMaps(launchOptions: nil)
+                        }.buttonStyle(.bordered)
+                    }
+                }
+                Image(systemName: "location.circle.fill").font(.system(size: 36)).foregroundStyle(.blue)
                 Text(model.status).font(.headline)
                 if let loc = model.location {
                     Group {
@@ -59,12 +79,20 @@ struct ContentView: View {
                 Button("刷新定位") { model.start() }.buttonStyle(.bordered)
                 Text("位置数据仅在本机处理，不会上传服务器。")
                     .font(.footnote).foregroundStyle(.secondary)
-                Spacer()
+              }
+              .padding(20)
             }
-            .padding(24)
             .navigationTitle("当前坐标")
             .onAppear { model.start() }
+            .onReceive(model.$location) { newLocation in
+                guard let newLocation else { return }
+                region.center = newLocation.coordinate
+            }
         }
+    }
+    private func centerOnUser() {
+        guard let loc = model.location else { return }
+        region = MKCoordinateRegion(center: loc.coordinate, span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01))
     }
     private func row(_ name: String, _ value: String) -> some View {
         HStack { Text(name).foregroundStyle(.secondary); Spacer(); Text(value).monospacedDigit() }
