@@ -1,0 +1,67 @@
+name: StudyReader iOS build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [studyreader-ios-test]
+
+permissions:
+  contents: read
+
+jobs:
+  simulator-build:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record Xcode version
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Build iOS Simulator app
+        run: >-
+          xcodebuild
+          -project ios/StudyApp/StudyReader.xcodeproj
+          -scheme StudyReader
+          -configuration Debug
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO
+          build
+      - name: Run iOS unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          device_id=$(xcrun simctl list devices available --json | python3 scripts/select_ios_simulator.py)
+          xcodebuild \
+            -project ios/StudyApp/StudyReader.xcodeproj \
+            -scheme StudyReader \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$device_id" \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+  unsigned-ipa:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build device app without signing
+        run: >-
+          xcodebuild
+          -project ios/StudyApp/StudyReader.xcodeproj
+          -scheme StudyReader
+          -configuration Release
+          -sdk iphoneos
+          -destination 'generic/platform=iOS'
+          -derivedDataPath build-studyreader
+          CODE_SIGNING_ALLOWED=NO
+          build
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p ipa-output/Payload
+          cp -R build-studyreader/Build/Products/Release-iphoneos/StudyReader.app ipa-output/Payload/
+          cd ipa-output
+          zip -qry StudyReader-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StudyReader-unsigned-IPA
+          path: ipa-output/StudyReader-unsigned.ipa

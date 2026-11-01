@@ -1,0 +1,53 @@
+{
+  "origin": "Self-authored synthetic test materials; no IPA content",
+  "source_script": "scripts/build_pdf_fixtures.py",
+  "text_lines": [
+    "第一段：请选中这句话，并保存摘录。",
+    "English sentence: Select this complete line, then add a note.",
+    "跨行测试第一行：学习从证据开始，",
+    "跨行测试第二行：摘录需要保留原文位置。"
+  ],
+  "scan_lines": [
+    "扫描页测试：识别这句话，再校正一个字。",
+    "OCR sample: read this line and verify its location."
+  ],
+  "files": [
+    {
+      "file": "F1_text_layer.pdf",
+      "description": "Two selectable text pages",
+      "bytes": 36395,
+      "sha256": "25d069d45fba4090fbfa9aef224f41e0d9a8cd92f55ee1e950b8df857cced5c4",
+      "expected_pages": 2,
+      "text_layer_pages_1based": [
+        1,
+        2
+      ]
+    },
+    {
+      "file": "F2_image_only.pdf",
+      "description": "One image-only scan page",
+      "bytes": 46613,
+      "sha256": "5416f8fbf91149d657ab356a07bd15802940ea27c936404484d1a10a96c664fc",
+      "expected_pages": 1,
+      "text_layer_pages_1based": []
+    },
+    {
+      "file": "F3_corrupt.pdf",
+      "description": "Deliberately truncated PDF",
+      "bytes": 38,
+      "sha256": "5bd73531a5c05f5ad838faeab543edc04d981a87645837c4ee61808022e609ef",
+      "expected_pages": null,
+      "text_layer_pages_1based": []
+    },
+    {
+      "file": "F4_mixed.pdf",
+      "description": "One text page and one scan page",
+      "bytes": 79209,
+      "sha256": "48fe2eacedc56a23e76bdf9d5e5c53fad34336838e96ca1744a067bc95cc4014",
+      "expected_pages": 2,
+      "text_layer_pages_1based": [
+        1
+      ]
+    }
+  ]
+}
