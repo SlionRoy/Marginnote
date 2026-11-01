@@ -91,7 +91,7 @@ struct ContentView: View {
                 }
             }
             .fileExporter(isPresented: $showingArchiveExporter,
-                          document: $archiveDocument, contentType: .json,
+                          document: archiveDocument, contentType: .json,
                           defaultFilename: "StudyReader-Notes") { result in
                 archiveDocument = nil
                 switch result {
@@ -204,3 +204,4 @@ struct ContentView: View {
         }
     }
 }
+
