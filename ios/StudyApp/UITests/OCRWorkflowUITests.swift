@@ -7,6 +7,16 @@ final class OCRWorkflowUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    override func tearDownWithError() throws {
+        if let testRun, testRun.failureCount > 0 {
+            // Capture the screen independently of an app accessibility query.
+            let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            attachment.name = "failure-entire-screen"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
     @MainActor
     func testOCRWordCorrectionAndNoteSurviveRelaunch() throws {
         let app = XCUIApplication()
@@ -145,17 +155,42 @@ final class OCRWorkflowUITests: XCTestCase {
 
         waitUntilReady(storedEntry)
         storedEntry.tap()
+        let restoredForm = app.descendants(matching: .any)
+            .matching(identifier: "note.editor.form").firstMatch
         let restoredNote = app.textViews["note.editor.text"]
-        reveal(restoredNote, in: noteForm, scrollingUp: true)
-        waitUntilReady(restoredNote)
+        reveal(restoredNote, in: restoredForm, scrollingUp: true)
+        attachScreenshot(app, name: "06-reopened-editor-before-content-checks")
+        // reveal has already checked existence and hittability. Verify actual
+        // contents and editing instead of repeating the readiness query.
         XCTAssertEqual(restoredNote.value as? String, noteText)
         let preservedOriginal = app.staticTexts["note.editor.originalOCR"]
-        reveal(preservedOriginal, in: noteForm, scrollingUp: false)
+        reveal(preservedOriginal, in: restoredForm, scrollingUp: false)
         XCTAssertEqual(preservedOriginal.label.lowercased(), originalText.lowercased())
         let restoredExcerpt = app.staticTexts["note.editor.excerpt"]
-        reveal(restoredExcerpt, in: noteForm, scrollingUp: false)
+        reveal(restoredExcerpt, in: restoredForm, scrollingUp: false)
         XCTAssertEqual(restoredExcerpt.label, excerptText)
-        attachScreenshot(app, name: "06-restored-excerpt-note-and-source")
+        attachScreenshot(app, name: "07-restored-excerpt-note-and-source")
+
+        let updatedNoteText = "Updated note \(runMarker)"
+        reveal(restoredNote, in: restoredForm, scrollingUp: true)
+        replaceSingleLineText(in: restoredNote, with: updatedNoteText)
+        let updateSave = app.buttons["note.editor.save"]
+        waitUntilReady(updateSave)
+        updateSave.tap()
+        let updateDismissed = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in !restoredNote.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [updateDismissed], timeout: 15), .completed)
+        app.terminate()
+        app.launch()
+        let updatedExcerpts = app.buttons["reader.excerpts"]
+        waitUntilReady(updatedExcerpts)
+        updatedExcerpts.tap()
+        let updatedEntry = app.buttons.matching(NSPredicate(
+            format: "label CONTAINS %@ AND label CONTAINS %@", excerptText, updatedNoteText
+        )).firstMatch
+        XCTAssertTrue(updatedEntry.waitForExistence(timeout: 15),
+                      "Editing a reopened note must persist without changing the excerpt.")
+        attachScreenshot(app, name: "08-updated-note-after-second-relaunch")
     }
 
     @MainActor
