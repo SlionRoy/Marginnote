@@ -17,6 +17,7 @@ final class StudySession: ObservableObject {
     @Published var errorMessage: String?
     @Published var infoMessage: String?
     @Published private(set) var isBusy = false
+    @Published var ocrOptions = OCRRecognitionOptions()
 
     private let store = ExcerptFileStore(
         fileURL: DocumentImport.supportDirectory.appendingPathComponent("excerpts.json"))
@@ -144,9 +145,10 @@ final class StudySession: ObservableObject {
         do {
             ocrPageImage = nil
             let image = try OCRService.render(page)
+            let options = ocrOptions
             let candidates = try await Task.detached(priority: .userInitiated) {
                 try OCRService.recognize(image, documentID: documentID,
-                                         pageIndex: pageIndex)
+                                         pageIndex: pageIndex, options: options)
             }.value
             guard self.documentID == documentID else { return }
             guard !candidates.isEmpty else { throw OCRServiceError.noText }

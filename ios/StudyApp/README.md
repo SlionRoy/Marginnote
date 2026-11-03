@@ -1,13 +1,29 @@
-# StudyReader：iPhone / iPad 工程草案
+# StudyReader：PDF 与 OCR 学习测试 App
 
-这是独立实现的移动端入口，不使用原 IPA 的代码或资源。使用系统 PDFKit 处理已有文字层的 PDF，并把摘录、笔记交给相邻的 `StudyCore` Swift Package 保存。
+独立 SwiftUI / PDFKit / Vision 实现，不包含第三方应用的代码、模型或资源。支持 iPhone/iPad，最低 iOS 18。
 
-在 macOS 上用 Xcode 16 或更新版本打开 `StudyReader.xcodeproj`，选择 iPhone 或 iPad 模拟器，运行共享的 `StudyReader` scheme。真机安装需将示例 Bundle Identifier 改为自己的值，并配置开发团队。工程目标最低 iOS 18。当前 Windows 工作机没有 Xcode/Swift，因此这些步骤尚未执行，工程是否能构建还需以 Xcode 结果为准。
+## 使用
 
-当前源码预期交互：导入 PDF → 选中文字 → 点“摘录选区” → 写笔记 → 在摘录列表打开并跳至来源区域。扫描页可点“识别本页”，使用系统 Vision 在设备上识别，在扫描页预览点选识别区域或从列表勾选同页的一行或多行候选文字、统一校正，再建立标记为 OCR 来源的摘录和笔记。“文件”菜单提供用户主动导出明文 JSON 备份、从所选 JSON 合并恢复。iPhone 使用单栏阅读和单独的摘录列表；iPad 横向空间使用并列列表。文档副本和 `excerpts.json` 存于应用的 Application Support。导入先复制到临时文件并核对 SHA-256，再移入文档目录；重用和重开已有文件时也核对摘要；上次 PDF 副本缺失或无法解析时给出错误提示。文档 ID 取摘要前 16 字节；这只是本应用的身份设计，不表示与原应用兼容。
+导入 PDF 后，可选择已有文字层并建立摘录。扫描页点“识别本页”，在页面预览中选择识别出的文字范围，核对或修改文字后建立摘录、写笔记。识别设置提供准确/速度优先、语言和语言纠错选项。OCR 校正前原文和页面矩形会随摘录保存，便于核对。
 
-当前限制：OCR 源码尚未在 iOS 上运行；只能按所选 OCR 候选行建立摘录，不能在扫描页上直接拖动选择任意字词。旋转页的 PDF 选区与 OCR 坐标均暂不支持；Vision 图像到 PDF 的矩形映射仍需用 F2/F4 核对。摘录区域以运行时 PDFKit 标记显示，未写回 PDF，其视觉效果尚未验证；跨页选区未在设备上验证。源码已为应用目录设置 iOS 文件保护并排除系统备份，但尚未在设备上验证。备份只含摘录和笔记，恢复时仍需原 PDF；导出的 JSON 为明文，离开应用后不再受应用文件保护。请先使用 `tests/fixtures/` 的自制 PDF 测试，不要在未验证阶段导入敏感文件。
+文字区域来自 Vision 的真实范围框；准确模式可能给一个词中的多个字符返回同一框，此时按整个词选择，不虚构细分字符框。缺少范围框时会注明整行选择。保留原识别结果顺序，不声称解决复杂多栏阅读顺序。
 
-首次 Xcode 验证应记录 Xcode/Swift/iOS 版本和完整构建日志，运行工程 scheme 中的八项 iOS 单元测试（其中一项用 F2 实际调用 Vision），并按 `WORKFLOW_ACCEPTANCE.md` 先执行 A01–A04，再执行 OCR 的 A05–A08。macOS 上单独运行 `swift test --package-path ../StudyCore` 只验证数据包，不能代替 App 的构建和交互测试。
+摘录列表可回到 PDF 来源位置。“文件”菜单可导出明文 JSON 备份或合并恢复。备份包含摘录、识别原文和笔记，不包含 PDF；恢复后需重新导入同一 PDF。PDF 原文件保持不变，阅读时高亮由保存的来源矩形重建。
 
-`.github/workflows/studyreader-ios.yml` 可手动触发，也可在测试分支推送时运行；它构建模拟器并运行测试，同时尝试生成未签名的设备 IPA。未签名 IPA 需要由用户使用合适工具签名后才能安装；构建结果以实际日志为准。
+## 构建与测试
+
+在 macOS 的 Xcode 中打开 `StudyReader.xcodeproj`，运行共享 scheme `StudyReader`。依赖只有系统框架和本仓库 `../StudyCore` Swift Package。
+
+运行 `swift test --package-path ../StudyCore` 验证数据包。App 测试使用 `xcodebuild -project StudyReader.xcodeproj -scheme StudyReader -destination 'platform=iOS Simulator,id=<available-device-uuid>,arch=arm64' ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO test`。
+
+测试材料为仓库自制的中英文 PDF。验证覆盖文字层选区、文件恢复、OCR 坐标、相同词框合并、Unicode 范围、缺失几何、跨行/分离范围、校正前文字保留和实际 Vision 扫描页选词后保存读回。测试源码存在不代表已运行，以对应提交的 Actions 日志为准。
+
+`.github/workflows/studyreader-ios.yml` 在测试分支推送后运行。单元/集成测试通过后才构建设备包，产物包含 `StudyReader-unsigned.ipa` 和记录源码提交、版本、Xcode、SHA-256 的 `build-info.json`。
+
+## 当前边界
+
+- IPA 未签名，安装前需使用自己的开发团队或合适的签名方式；没有提供签名凭据，也未宣称真机安装成功。
+- 旋转 PDF 页的文字选择和 OCR 坐标当前明确拒绝，避免错误定位。
+- OCR 框是识别器提供的定位提示，不保证精确贴合每一个字符；复杂版面与低质量扫描仍须人工核对。
+- 尚未证明全部 UI 操作、文件保护、跨页交互和真机性能。模拟器的合成材料测试不等于任意文档准确率或其他应用的功能等价。
+- 本 App 不调用外部 OCR 服务；导入 PDF 和笔记保存在本地，应用目录排除系统备份。主动导出的 JSON 离开应用后应由用户妥善保管。

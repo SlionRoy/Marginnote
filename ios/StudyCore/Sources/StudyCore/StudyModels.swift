@@ -75,9 +75,11 @@ public struct SourceSelection: Codable, Equatable, Sendable {
     public let documentID: UUID
     public let fragments: [PageSelectionFragment]
     public let text: String
+    /// Unedited OCR output; absent for legacy and PDF text selections.
+    public let ocrOriginalText: String?
 
     public init(documentID: UUID, fragments: [PageSelectionFragment],
-                text: String) throws {
+                text: String, ocrOriginalText: String? = nil) throws {
         guard !fragments.isEmpty else { throw StudyDataError.emptySelectionFragments }
         guard zip(fragments, fragments.dropFirst()).allSatisfy({
             $0.0.pageIndex <= $0.1.pageIndex
@@ -90,16 +92,18 @@ public struct SourceSelection: Codable, Equatable, Sendable {
         self.documentID = documentID
         self.fragments = fragments
         self.text = text
+        self.ocrOriginalText = ocrOriginalText
     }
 
-    private enum CodingKeys: String, CodingKey { case documentID, fragments, text }
+    private enum CodingKeys: String, CodingKey { case documentID, fragments, text, ocrOriginalText }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(documentID: values.decode(UUID.self, forKey: .documentID),
                       fragments: values.decode([PageSelectionFragment].self,
                                                forKey: .fragments),
-                      text: values.decode(String.self, forKey: .text))
+                  text: values.decode(String.self, forKey: .text),
+                  ocrOriginalText: values.decodeIfPresent(String.self, forKey: .ocrOriginalText))
     }
 }
 

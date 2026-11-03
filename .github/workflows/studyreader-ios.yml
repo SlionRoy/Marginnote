@@ -27,6 +27,8 @@ jobs:
           -destination 'generic/platform=iOS Simulator'
           CODE_SIGNING_ALLOWED=NO
           build
+      - name: Run StudyCore tests
+        run: swift test --package-path ios/StudyCore
       - name: Run iOS unit tests
         shell: bash
         run: |
@@ -39,8 +41,16 @@ jobs:
             -destination "platform=iOS Simulator,id=$device_id,arch=arm64" \
             ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
+            -resultBundlePath TestResults/StudyReader.xcresult \
             test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: StudyReader-test-results
+          path: TestResults/StudyReader.xcresult
+          if-no-files-found: ignore
   unsigned-ipa:
+    needs: simulator-build
     runs-on: macos-latest
     timeout-minutes: 40
     steps:
@@ -58,12 +68,35 @@ jobs:
           build
       - name: Package unsigned IPA
         run: |
+          set -euo pipefail
           mkdir -p ipa-output/Payload
           cp -R build-studyreader/Build/Products/Release-iphoneos/StudyReader.app ipa-output/Payload/
           cd ipa-output
           zip -qry StudyReader-unsigned.ipa Payload
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, plistlib, subprocess
+          ipa = pathlib.Path('StudyReader-unsigned.ipa')
+          info = plistlib.loads(pathlib.Path('Payload/StudyReader.app/Info.plist').read_bytes())
+          manifest = {
+              'source_commit': os.environ['GITHUB_SHA'],
+              'workflow_run_id': os.environ['GITHUB_RUN_ID'],
+              'workflow_run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'ipa_sha256': hashlib.sha256(ipa.read_bytes()).hexdigest(),
+              'ipa_bytes': ipa.stat().st_size,
+              'bundle_identifier': info['CFBundleIdentifier'],
+              'version': info['CFBundleShortVersionString'],
+              'build': info['CFBundleVersion'],
+              'minimum_os_version': info.get('MinimumOSVersion'),
+              'code_signing_allowed': False,
+              'device_installation_verified': False,
+              'xcode': subprocess.check_output(['xcodebuild', '-version'], text=True).strip(),
+              'swift': subprocess.check_output(['swift', '--version'], text=True).strip(),
+          }
+          pathlib.Path('build-info.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: StudyReader-unsigned-IPA
-          path: ipa-output/StudyReader-unsigned.ipa
-
+          path: |
+            ipa-output/StudyReader-unsigned.ipa
+            ipa-output/build-info.json

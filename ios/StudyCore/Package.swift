@@ -10,4 +10,3 @@ let package = Package(
         .testTarget(name: "StudyCoreTests", dependencies: ["StudyCore"])
     ]
 )
-

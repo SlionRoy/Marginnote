@@ -3,6 +3,23 @@ import XCTest
 @testable import StudyCore
 
 final class StudyModelsTests: XCTestCase {
+    func testOCRCorrectionKeepsOriginalAndLegacyFilesRemainReadable() throws {
+        let fragment = try PageSelectionFragment(pageIndex: 0,
+            rects: [try UnitRect(x: 0.1, y: 0.2, width: 0.3, height: 0.1)], origin: .ocr)
+        let selection = try SourceSelection(documentID: UUID(), fragments: [fragment],
+                                            text: "corrected", ocrOriginalText: "raw OCR")
+        let data = try JSONEncoder().encode(selection)
+        let decoded = try JSONDecoder().decode(SourceSelection.self, from: data)
+        XCTAssertEqual(decoded, selection)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        legacy.removeValue(forKey: "ocrOriginalText")
+        let old = try JSONDecoder().decode(SourceSelection.self,
+            from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertNil(old.ocrOriginalText)
+        XCTAssertEqual(old.text, "corrected")
+        XCTAssertEqual(old.fragments, selection.fragments)
+    }
+
     private func selection(origin: TextOrigin = .pdfText) throws -> SourceSelection {
         try SourceSelection(
             documentID: UUID(uuidString: "A3E86FDB-010B-46A2-B215-98D7D62127DA")!,

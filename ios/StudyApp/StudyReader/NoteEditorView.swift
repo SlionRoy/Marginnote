@@ -26,6 +26,12 @@ struct NoteEditorView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                if let original = excerpt.selection.ocrOriginalText,
+                   original != excerpt.selection.text {
+                    Section("校正前的识别文字") {
+                        Text(original).textSelection(.enabled)
+                    }
+                }
                 Section("我的笔记") {
                     TextEditor(text: $noteText)
                         .frame(minHeight: 160)

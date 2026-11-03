@@ -11,6 +11,42 @@ struct OCRCandidate: Identifiable, Sendable {
     let text: String
     let rect: UnitRect
     let confidence: Float
+    let regions: [OCRTextRegion]
+    let usesLineFallback: Bool
+
+    init(documentID: UUID, pageIndex: Int, text: String, rect: UnitRect,
+         confidence: Float, regions: [OCRTextRegion] = []) {
+        self.documentID = documentID
+        self.pageIndex = pageIndex
+        self.text = text
+        self.rect = rect
+        self.confidence = confidence
+        self.usesLineFallback = regions.isEmpty
+        self.regions = regions.isEmpty
+            ? [OCRTextRegion(range: 0..<text.count, rect: rect)] : regions
+    }
+}
+
+struct OCRRecognitionOptions: Equatable, Sendable {
+    enum Mode: String, CaseIterable, Identifiable, Sendable {
+        case accurate, fast
+        var id: String { rawValue }
+        var title: String { self == .accurate ? "准确优先" : "速度优先" }
+    }
+    enum Language: String, CaseIterable, Identifiable, Sendable {
+        case automatic, chineseEnglish, english
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .automatic: "自动"
+            case .chineseEnglish: "简体中文与英语"
+            case .english: "英语"
+            }
+        }
+    }
+    var mode: Mode = .accurate
+    var language: Language = .automatic
+    var usesLanguageCorrection = false
 }
 
 enum OCRServiceError: LocalizedError {
@@ -19,6 +55,7 @@ enum OCRServiceError: LocalizedError {
     case noImage
     case noText
     case invalidSelection
+    case unsupportedLanguage
 
     var errorDescription: String? {
         switch self {
@@ -27,6 +64,7 @@ enum OCRServiceError: LocalizedError {
         case .noImage: "无法生成用于识别的页面图像。"
         case .noText: "本页没有识别出文字，请检查扫描图是否清晰。"
         case .invalidSelection: "请选择同一页面上的识别文字，并核对摘录内容。"
+        case .unsupportedLanguage: "当前识别模式不支持所选语言，请改用准确优先或其他语言。"
         }
     }
 }
@@ -50,11 +88,9 @@ enum OCRService {
     }
 
     static func recognize(_ image: CGImage, documentID: UUID,
-                          pageIndex: Int) throws -> [OCRCandidate] {
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.automaticallyDetectsLanguage = true
-        request.usesLanguageCorrection = true
+                          pageIndex: Int,
+                          options: OCRRecognitionOptions = .init()) throws -> [OCRCandidate] {
+        let request = try configuredRequest(options)
         try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
         let candidates = (request.results ?? []).compactMap { observation -> OCRCandidate? in
             guard let recognized = observation.topCandidates(1).first,
@@ -62,18 +98,46 @@ enum OCRService {
                   let rect = try? unitRect(fromVision: observation.boundingBox) else {
                 return nil
             }
+            let text = recognized.string
+            let boxes = text.indices.map { index -> UnitRect? in
+                let end = text.index(after: index)
+                guard let box = try? recognized.boundingBox(for: index..<end) else { return nil }
+                return try? unitRect(fromVision: box.boundingBox)
+            }
+            let regions = (try? OCRTextSelection.coalescedRegions(
+                text: text, characterRects: boxes)) ?? []
             return OCRCandidate(documentID: documentID, pageIndex: pageIndex,
                                 text: recognized.string, rect: rect,
-                                confidence: recognized.confidence)
+                                confidence: recognized.confidence, regions: regions)
         }
-        return candidates.sorted {
-            if abs($0.rect.y - $1.rect.y) > 0.01 { return $0.rect.y < $1.rect.y }
-            return $0.rect.x < $1.rect.x
+        // Keep the request's result order. A proximity-based comparator is not
+        // transitive and can silently interleave columns or reorder lines.
+        return candidates
+    }
+
+    static func configuredRequest(_ options: OCRRecognitionOptions) throws -> VNRecognizeTextRequest {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = options.mode == .accurate ? .accurate : .fast
+        request.usesLanguageCorrection = options.usesLanguageCorrection
+        request.automaticallyDetectsLanguage = options.language == .automatic
+        if options.language != .automatic {
+            let wanted = options.language == .chineseEnglish ? ["zh-Hans", "en-US"] : ["en-US"]
+            let supported = try request.supportedRecognitionLanguages()
+            guard wanted.allSatisfy({ supported.contains($0) }) else {
+                throw OCRServiceError.unsupportedLanguage
+            }
+            request.recognitionLanguages = wanted
         }
+        return request
     }
 
     /// Vision uses bottom-left normalized coordinates; StudyCore uses top-left.
     static func unitRect(fromVision box: CGRect) throws -> UnitRect {
+        guard box.origin.x.isFinite, box.origin.y.isFinite,
+              box.width.isFinite, box.height.isFinite,
+              box.width > 0, box.height > 0 else {
+            throw OCRServiceError.invalidSelection
+        }
         let left = max(0, min(1, box.minX))
         let right = max(0, min(1, box.maxX))
         let top = max(0, min(1, 1 - box.maxY))
@@ -120,8 +184,10 @@ enum OCRService {
             throw OCRServiceError.invalidSelection
         }
         let fragment = try PageSelectionFragment(
-            pageIndex: first.pageIndex, rects: candidates.map(\.rect), origin: .ocr)
+            pageIndex: first.pageIndex,
+            rects: candidates.flatMap { $0.regions.map(\.rect) }, origin: .ocr)
         return try SourceSelection(documentID: first.documentID,
-                                   fragments: [fragment], text: correctedText)
+                                   fragments: [fragment], text: correctedText,
+                                   ocrOriginalText: candidates.map(\.text).joined(separator: "\n"))
     }
 }
