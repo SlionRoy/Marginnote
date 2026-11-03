@@ -36,6 +36,7 @@ struct NoteEditorView: View {
                     TextEditor(text: $noteText)
                         .frame(minHeight: 160)
                         .accessibilityLabel("笔记内容")
+                        .accessibilityIdentifier("note.editor.text")
                 }
             }
             .navigationTitle("摘录与笔记")
@@ -52,6 +53,7 @@ struct NoteEditorView: View {
                             saving = false
                         }
                     }.disabled(saving)
+                    .accessibilityIdentifier("note.editor.save")
                 }
             }
         }

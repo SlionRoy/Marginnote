@@ -46,6 +46,16 @@ struct ContentView: View {
                         Button { showingImporter = true } label: {
                             Label("导入 PDF", systemImage: "square.and.arrow.down")
                         }
+                        Button {
+                            if let url = Bundle.main.url(forResource: "F2_image_only", withExtension: "pdf") {
+                                Task { await session.importPDF(url) }
+                            } else {
+                                session.errorMessage = "测试 PDF 未包含在此构建中。"
+                            }
+                        } label: {
+                            Label("打开示例扫描 PDF", systemImage: "doc.text.viewfinder")
+                        }
+                        .accessibilityIdentifier("reader.openSample")
                         Button { confirmingArchiveExport = true } label: {
                             Label("导出摘录备份", systemImage: "square.and.arrow.up")
                         }
@@ -59,7 +69,9 @@ struct ContentView: View {
                         .accessibilityIdentifier("ocr.settings.open")
                     } label: {
                         Label("文件", systemImage: "folder")
-                    }.disabled(session.isBusy)
+                    }
+                    .disabled(session.isBusy)
+                    .accessibilityIdentifier("reader.fileMenu")
                 }
                 if session.document != nil {
                     ToolbarItemGroup(placement: .topBarTrailing) {
@@ -77,6 +89,7 @@ struct ContentView: View {
                             Button { showingExcerpts = true } label: {
                                 Label("摘录列表", systemImage: "list.bullet")
                             }
+                            .accessibilityIdentifier("reader.excerpts")
                         }
                     }
                 }

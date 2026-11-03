@@ -43,11 +43,26 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             -resultBundlePath TestResults/StudyReader.xcresult \
             test
+      - name: Export test summary and screenshots
+        if: always()
+        run: |
+          if [ -d TestResults/StudyReader.xcresult ]; then
+            xcrun xcresulttool get test-results summary --path TestResults/StudyReader.xcresult > TestResults/summary.json
+            xcrun xcresulttool export attachments --path TestResults/StudyReader.xcresult --output-path TestResults/attachments
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: StudyReader-test-results
           path: TestResults/StudyReader.xcresult
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: StudyReader-test-report
+          path: |
+            TestResults/summary.json
+            TestResults/attachments
           if-no-files-found: ignore
   unsigned-ipa:
     needs: simulator-build
