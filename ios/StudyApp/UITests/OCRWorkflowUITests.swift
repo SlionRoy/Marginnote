@@ -50,43 +50,77 @@ final class OCRWorkflowUITests: XCTestCase {
         // Cache identifiers/labels across lazy-list scrolls; never split a region's label.
         var observedRegions: [String: ObservedRegion] = [:]
         var wordRegions: [ObservedRegion]?
-        for attempt in 0...8 {
-            for region in observedRegionButtons(in: app) {
+        var searchObservations: [String] = []
+        var previousSearchPosition: String?
+        var unchangedSearchPositions = 0
+        let maximumSearchScrolls = 32
+        for attempt in 0...maximumSearchScrolls {
+            let regions = observedRegionButtons(in: app)
+            let position = regionPositionSignature(regions)
+            searchObservations.append(regionObservation(
+                step: attempt, regions: regions, viewport: textList.frame))
+            for region in regions {
                 observedRegions[region.identifier] = region
             }
             wordRegions = exactRegionSequence(for: "read", among: Array(observedRegions.values))
             if wordRegions != nil { break }
-            if attempt < 8 { textList.swipeUp() }
+            unchangedSearchPositions = position == previousSearchPosition
+                ? unchangedSearchPositions + 1 : 0
+            previousSearchPosition = position
+            if unchangedSearchPositions >= 3 {
+                searchObservations.append("Stopped: three consecutive drags did not change region IDs or positions.")
+                break
+            }
+            if attempt < maximumSearchScrolls { scrollBySmallStep(textList, scrollingUp: true) }
         }
+        attachScrollObservations(searchObservations, name: "F2-OCR-region-search-observations")
         guard let wordRegions else {
             attachScreenshot(app, name: "OCR-region-not-found")
             let hierarchy = XCTAttachment(string: app.debugDescription)
             hierarchy.name = "F2-OCR-accessibility-hierarchy"
             hierarchy.lifetime = .keepAlways
             add(hierarchy)
-            XCTFail("No same-line consecutive region sequence exactly spelling 'read' after eight search scrolls.")
+            XCTFail("No same-line consecutive region sequence exactly spelling 'read' within the bounded overlapping search.")
             return
         }
 
         // The first region may have scrolled just above the viewport while the last
         // one was discovered. Reveal it, then move forwards through the same sequence.
-        // Eight additional reveal scrolls bound the entire selection phase.
-        var revealScrollsRemaining = 8
-        for (position, region) in wordRegions.enumerated() {
+        // Every reveal drag uses the same overlapping, slow movement as the search.
+        var revealScrollsRemaining = 24
+        var revealObservations: [String] = []
+        for region in wordRegions {
             let button = app.buttons[region.identifier]
+            var previousRevealPosition: String?
+            var unchangedRevealPositions = 0
             while !(button.exists && button.isHittable) && revealScrollsRemaining > 0 {
-                let visible = observedRegionButtons(in: app).filter {
-                    app.buttons[$0.identifier].isHittable
+                let viewport = textList.frame
+                let regions = observedRegionButtons(in: app)
+                let position = regionPositionSignature(regions)
+                revealObservations.append("Target: \(region.identifier)\n" + regionObservation(
+                    step: 24 - revealScrollsRemaining, regions: regions, viewport: viewport))
+                unchangedRevealPositions = position == previousRevealPosition
+                    ? unchangedRevealPositions + 1 : 0
+                previousRevealPosition = position
+                if unchangedRevealPositions >= 3 {
+                    revealObservations.append("Stopped: three reveal drags did not change region IDs or positions.")
+                    break
                 }
+                let visible = regions.filter { $0.frame.intersects(viewport) }
                 let firstVisible = visible.min(by: regionComesBefore)
-                if position == 0, let firstVisible, regionComesBefore(region, firstVisible) {
-                    textList.swipeDown()
+                let scrollingUp: Bool
+                if let current = regions.first(where: { $0.identifier == region.identifier }) {
+                    scrollingUp = current.frame.midY >= viewport.midY
+                } else if let firstVisible {
+                    scrollingUp = !regionComesBefore(region, firstVisible)
                 } else {
-                    textList.swipeUp()
+                    scrollingUp = true
                 }
+                scrollBySmallStep(textList, scrollingUp: scrollingUp)
                 revealScrollsRemaining -= 1
             }
             guard button.exists && button.isHittable else {
+                attachScrollObservations(revealObservations, name: "F2-OCR-region-reveal-observations")
                 attachScreenshot(app, name: "OCR-region-could-not-be-revealed")
                 let hierarchy = XCTAttachment(string: app.debugDescription)
                 hierarchy.name = "F2-OCR-region-reveal-hierarchy"
@@ -99,6 +133,7 @@ final class OCRWorkflowUITests: XCTestCase {
                            "The cached OCR region changed before selection.")
             button.tap()
         }
+        attachScrollObservations(revealObservations, name: "F2-OCR-region-reveal-observations")
         let regionAttachment = XCTAttachment(string: wordRegions.map {
             "\($0.identifier): \($0.text)"
         }.joined(separator: "\n"))
@@ -197,9 +232,32 @@ final class OCRWorkflowUITests: XCTestCase {
     private func reveal(_ element: XCUIElement, in scrollView: XCUIElement,
                         scrollingUp: Bool, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(scrollView.waitForExistence(timeout: 15), file: file, line: line)
-        for _ in 0..<6 {
+        var observations: [String] = []
+        defer {
+            if !observations.isEmpty {
+                attachScrollObservations(observations,
+                    name: scrollingUp ? "form-reveal-forward" : "form-reveal-backward")
+            }
+        }
+        var previousPosition: String?
+        var unchangedPositions = 0
+        for attempt in 0..<24 {
             if element.exists && element.isHittable { return }
-            if scrollingUp { scrollView.swipeUp() } else { scrollView.swipeDown() }
+            let cells = scrollView.cells.allElementsBoundByIndex.prefix(32)
+            let position = cells.map { cell in
+                "\(cell.identifier):\(String(format: "%.0f", cell.frame.minY)):\(cell.label)"
+            }.joined(separator: "\n")
+            observations.append("Step \(attempt), viewport \(scrollView.frame)\n\(position)")
+            // An empty lazy snapshot cannot establish that scrolling stopped.
+            if !position.isEmpty {
+                unchangedPositions = position == previousPosition ? unchangedPositions + 1 : 0
+                previousPosition = position
+                if unchangedPositions >= 3 {
+                    observations.append("Stopped: three form drags did not change cell positions.")
+                    break
+                }
+            }
+            scrollBySmallStep(scrollView, scrollingUp: scrollingUp)
         }
         XCTAssertTrue(element.exists && element.isHittable,
                       "Required form field could not be revealed by scrolling.", file: file, line: line)
@@ -210,6 +268,7 @@ final class OCRWorkflowUITests: XCTestCase {
         let lineIndex: Int
         let regionIndex: Int
         let text: String
+        let frame: CGRect
     }
 
     @MainActor
@@ -224,8 +283,52 @@ final class OCRWorkflowUITests: XCTestCase {
                 let text = button.label
                 guard !text.isEmpty else { return nil }
                 return ObservedRegion(identifier: identifier, lineIndex: lineIndex,
-                                      regionIndex: regionIndex, text: text)
+                                      regionIndex: regionIndex, text: text, frame: button.frame)
             }
+    }
+
+    @MainActor
+    private func scrollBySmallStep(_ scrollView: XCUIElement, scrollingUp: Bool) {
+        let viewport = scrollView.frame
+        guard viewport.minX.isFinite, viewport.minY.isFinite,
+              viewport.width.isFinite, viewport.height.isFinite,
+              viewport.width > 40, viewport.height > 40 else {
+            XCTFail("Cannot scroll an invalid or collapsed observed viewport: \(viewport)")
+            return
+        }
+        // Limit the drag to 25% of the observed viewport, capped at 96 points,
+        // to retain overlap. A stationary final hold reduces flick momentum;
+        // the next observation records the actual resulting row positions.
+        let distance = min(viewport.height * 0.25, 96)
+        let middleY = viewport.height * 0.5
+        let direction: CGFloat = scrollingUp ? 1 : -1
+        let origin = scrollView.coordinate(withNormalizedOffset: .zero)
+        let start = origin.withOffset(CGVector(dx: viewport.width * 0.5,
+                                               dy: middleY + direction * distance * 0.5))
+        let end = origin.withOffset(CGVector(dx: viewport.width * 0.5,
+                                             dy: middleY - direction * distance * 0.5))
+        start.press(forDuration: 0.05, thenDragTo: end,
+                    withVelocity: XCUIGestureVelocity(rawValue: 100), thenHoldForDuration: 0.25)
+    }
+
+    private func regionPositionSignature(_ regions: [ObservedRegion]) -> String {
+        regions.sorted(by: regionComesBefore).map {
+            "\($0.identifier):\(String(format: "%.0f", $0.frame.minY)):\($0.text)"
+        }.joined(separator: "\n")
+    }
+
+    private func regionObservation(step: Int, regions: [ObservedRegion], viewport: CGRect) -> String {
+        let rows = regions.sorted(by: regionComesBefore).map {
+            "\($0.identifier) text=\(String(reflecting: $0.text)) frame=\($0.frame)"
+        }.joined(separator: "\n")
+        return "Step \(step), observed viewport \(viewport)\n\(rows.isEmpty ? "<no regions>" : rows)"
+    }
+
+    private func attachScrollObservations(_ observations: [String], name: String) {
+        let attachment = XCTAttachment(string: observations.joined(separator: "\n\n"))
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     private func regionComesBefore(_ lhs: ObservedRegion, _ rhs: ObservedRegion) -> Bool {

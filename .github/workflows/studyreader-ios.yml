@@ -29,7 +29,7 @@ jobs:
           build
       - name: Run StudyCore tests
         run: swift test --package-path ios/StudyCore
-      - name: Run iOS unit tests
+      - name: Run iOS unit and UI tests
         shell: bash
         run: |
           set -euo pipefail
@@ -39,6 +39,7 @@ jobs:
             -scheme StudyReader \
             -configuration Debug \
             -destination "platform=iOS Simulator,id=$device_id,arch=arm64" \
+            -parallel-testing-enabled NO \
             ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
             -resultBundlePath TestResults/StudyReader.xcresult \
