@@ -18,7 +18,9 @@
 
 测试材料为仓库自制的中英文 PDF。验证覆盖文字层选区、文件恢复、OCR 坐标、相同词框合并、Unicode 范围、缺失几何、跨行/分离范围、校正前文字保留和实际 Vision 扫描页选词后保存读回。测试源码存在不代表已运行，以对应提交的 Actions 日志为准。
 
-`.github/workflows/studyreader-ios.yml` 在测试分支推送后运行。单元/集成测试通过后才构建设备包，产物包含 `StudyReader-unsigned.ipa` 和记录源码提交、版本、Xcode、SHA-256 的 `build-info.json`。
+`.github/workflows/studyreader-ios.yml` 在测试分支推送后运行。StudyCore 与 `StudyReaderTests` 单元/集成测试通过后才构建设备包，产物包含 `StudyReader-unsigned.ipa` 和记录源码提交、版本、Xcode、SHA-256 的 `build-info.json`。打包后由使用者在自己的设备上实际测试，不能把核心测试通过当作全部交互已通过。
+
+界面自动化独立保留：手动运行工作流时勾选 `run_ui_tests`，会额外运行 `StudyReaderUITests` 并导出 `StudyReader-optional-UI-results`。该任务失败会如实显示失败，但不阻止核心测试通过后的 IPA 打包；默认推送不运行它。已有 UI 自动化在滚动和重开控件查询中出现失败，完整界面流程仍待手动验证。
 
 ## 当前边界
 

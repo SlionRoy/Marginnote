@@ -2,6 +2,12 @@ name: StudyReader iOS build
 
 on:
   workflow_dispatch:
+    inputs:
+      run_ui_tests:
+        description: 'Also run optional UI automation; manual device testing is still required'
+        required: false
+        type: boolean
+        default: false
   push:
     branches: [studyreader-ios-test]
 
@@ -29,7 +35,7 @@ jobs:
           build
       - name: Run StudyCore tests
         run: swift test --package-path ios/StudyCore
-      - name: Run iOS unit and UI tests
+      - name: Run iOS unit and integration tests
         shell: bash
         run: |
           set -euo pipefail
@@ -40,6 +46,7 @@ jobs:
             -configuration Debug \
             -destination "platform=iOS Simulator,id=$device_id,arch=arm64" \
             -parallel-testing-enabled NO \
+            -only-testing:StudyReaderTests \
             ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
             -resultBundlePath TestResults/StudyReader.xcresult \
@@ -64,6 +71,41 @@ jobs:
           path: |
             TestResults/summary.json
             TestResults/attachments
+          if-no-files-found: ignore
+  ui-tests:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_ui_tests
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run optional iOS UI tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          device_id=$(xcrun simctl list devices available --json | python3 scripts/select_ios_simulator.py)
+          xcodebuild \
+            -project ios/StudyApp/StudyReader.xcodeproj \
+            -scheme StudyReader \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$device_id,arch=arm64" \
+            -parallel-testing-enabled NO \
+            -only-testing:StudyReaderUITests \
+            ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO \
+            -resultBundlePath TestResults/StudyReader-UI.xcresult \
+            test
+      - name: Export UI summary and screenshots
+        if: always()
+        run: |
+          if [ -d TestResults/StudyReader-UI.xcresult ]; then
+            xcrun xcresulttool get test-results summary --path TestResults/StudyReader-UI.xcresult > TestResults/ui-summary.json
+            xcrun xcresulttool export attachments --path TestResults/StudyReader-UI.xcresult --output-path TestResults/ui-attachments
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: StudyReader-optional-UI-results
+          path: TestResults/
           if-no-files-found: ignore
   unsigned-ipa:
     needs: simulator-build
@@ -105,6 +147,9 @@ jobs:
               'minimum_os_version': info.get('MinimumOSVersion'),
               'code_signing_allowed': False,
               'device_installation_verified': False,
+              'required_tests': ['StudyCore', 'StudyReaderTests'],
+              'ui_automation_required_for_package': False,
+              'manual_device_testing': 'pending',
               'xcode': subprocess.check_output(['xcodebuild', '-version'], text=True).strip(),
               'swift': subprocess.check_output(['swift', '--version'], text=True).strip(),
           }
