@@ -113,16 +113,27 @@ final class OCRTextSelectionTests: XCTestCase {
         XCTAssertTrue(allText.contains("扫描"), allText)
         let line = try XCTUnwrap(candidates.first { $0.text.lowercased().contains("read this line") })
         XCTAssertFalse(line.usesLineFallback)
-        let word = try XCTUnwrap(line.regions.first {
-            OCRTextSelection.text(for: $0, in: line).lowercased() == "read"
-        })
-        XCTAssertLessThan(word.rect.width, line.rect.width * 0.5)
-        let slices = try OCRTextSelection.slices(in: [line], regionIDs: [word.id])
+        let found = try XCTUnwrap(line.text.range(of: "read", options: .caseInsensitive))
+        let start = line.text.distance(from: line.text.startIndex, to: found.lowerBound)
+        let end = line.text.distance(from: line.text.startIndex, to: found.upperBound)
+        let expected = start..<end
+        let wordRegions = line.regions.filter { $0.range.overlaps(expected) }
+        let details = line.regions.map {
+            "\($0.range): \(OCRTextSelection.text(for: $0, in: line)) -> \($0.rect)"
+        }.joined(separator: "\n")
+        let attachment = XCTAttachment(string: details)
+        attachment.name = "F2-actual-OCR-text-regions"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertEqual(wordRegions.flatMap { Array($0.range) }, Array(expected), details)
+        let wordBounds = try OCRTextSelection.enclosing(wordRegions.map(\.rect))
+        XCTAssertLessThan(wordBounds.width, line.rect.width * 0.5)
+        let slices = try OCRTextSelection.slices(in: [line], regionIDs: Set(wordRegions.map(\.id)))
         XCTAssertEqual(slices.map(\.text).joined().lowercased(), "read")
         let selection = try OCRService.sourceSelection(from: slices, correctedText: "READ")
         XCTAssertEqual(selection.ocrOriginalText?.lowercased(), "read")
         XCTAssertEqual(selection.text, "READ")
-        XCTAssertEqual(selection.fragments[0].rects, [word.rect])
+        XCTAssertEqual(selection.fragments[0].rects, wordRegions.map(\.rect))
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: folder) }
         let file = folder.appendingPathComponent("excerpts.json")

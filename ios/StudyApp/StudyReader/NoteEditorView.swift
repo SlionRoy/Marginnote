@@ -19,6 +19,7 @@ struct NoteEditorView: View {
             Form {
                 Section("摘录") {
                     Text(excerpt.selection.text).textSelection(.enabled)
+                        .accessibilityIdentifier("note.editor.excerpt")
                     Text("第 \(excerpt.selection.fragments[0].pageIndex + 1) 页")
                         .font(.caption).foregroundStyle(.secondary)
                     if excerpt.selection.fragments[0].origin == .ocr {
@@ -30,6 +31,7 @@ struct NoteEditorView: View {
                    original != excerpt.selection.text {
                     Section("校正前的识别文字") {
                         Text(original).textSelection(.enabled)
+                            .accessibilityIdentifier("note.editor.originalOCR")
                     }
                 }
                 Section("我的笔记") {
@@ -39,6 +41,8 @@ struct NoteEditorView: View {
                         .accessibilityIdentifier("note.editor.text")
                 }
             }
+            .accessibilityIdentifier("note.editor.form")
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("摘录与笔记")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

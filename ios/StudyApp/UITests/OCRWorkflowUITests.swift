@@ -15,10 +15,14 @@ final class OCRWorkflowUITests: XCTestCase {
         let runMarker = String(UUID().uuidString.prefix(8))
         let excerptText = "UI OCR excerpt \(runMarker)"
         let noteText = "UI OCR note \(runMarker)"
+        XCUIDevice.shared.orientation = .portrait
         app.launch()
 
         let fileMenu = app.buttons["reader.fileMenu"]
         waitUntilReady(fileMenu)
+        XCTAssertGreaterThan(app.windows.firstMatch.frame.height, 480,
+                             "The app must use the modern iPhone viewport, not 320x480 compatibility mode.")
+        attachScreenshot(app, name: "00-reader-viewport")
         fileMenu.tap()
         let sample = app.buttons["reader.openSample"]
         waitUntilReady(sample)
@@ -32,27 +36,65 @@ final class OCRWorkflowUITests: XCTestCase {
         XCTAssertTrue(textList.waitForExistence(timeout: 60),
                       "The real OCR result list did not appear for the bundled F2 sample.")
 
-        let word = app.buttons.matching(NSPredicate(
-            format: "identifier BEGINSWITH %@ AND label ==[c] %@", "ocr.region.", "read"
-        )).firstMatch
-        var foundWord = false
+        // Vision can represent the same word as one region or several real regions.
+        // Cache identifiers/labels across lazy-list scrolls; never split a region's label.
+        var observedRegions: [String: ObservedRegion] = [:]
+        var wordRegions: [ObservedRegion]?
         for attempt in 0...8 {
-            if word.exists && word.isHittable {
-                foundWord = true
-                break
+            for region in observedRegionButtons(in: app) {
+                observedRegions[region.identifier] = region
             }
+            wordRegions = exactRegionSequence(for: "read", among: Array(observedRegions.values))
+            if wordRegions != nil { break }
             if attempt < 8 { textList.swipeUp() }
         }
-        guard foundWord else {
+        guard let wordRegions else {
             attachScreenshot(app, name: "OCR-region-not-found")
             let hierarchy = XCTAttachment(string: app.debugDescription)
             hierarchy.name = "F2-OCR-accessibility-hierarchy"
             hierarchy.lifetime = .keepAlways
             add(hierarchy)
-            XCTFail("No selectable 'read' OCR region after at most eight list scrolls.")
+            XCTFail("No same-line consecutive region sequence exactly spelling 'read' after eight search scrolls.")
             return
         }
-        word.tap()
+
+        // The first region may have scrolled just above the viewport while the last
+        // one was discovered. Reveal it, then move forwards through the same sequence.
+        // Eight additional reveal scrolls bound the entire selection phase.
+        var revealScrollsRemaining = 8
+        for (position, region) in wordRegions.enumerated() {
+            let button = app.buttons[region.identifier]
+            while !(button.exists && button.isHittable) && revealScrollsRemaining > 0 {
+                let visible = observedRegionButtons(in: app).filter {
+                    app.buttons[$0.identifier].isHittable
+                }
+                let firstVisible = visible.min(by: regionComesBefore)
+                if position == 0, let firstVisible, regionComesBefore(region, firstVisible) {
+                    textList.swipeDown()
+                } else {
+                    textList.swipeUp()
+                }
+                revealScrollsRemaining -= 1
+            }
+            guard button.exists && button.isHittable else {
+                attachScreenshot(app, name: "OCR-region-could-not-be-revealed")
+                let hierarchy = XCTAttachment(string: app.debugDescription)
+                hierarchy.name = "F2-OCR-region-reveal-hierarchy"
+                hierarchy.lifetime = .keepAlways
+                add(hierarchy)
+                XCTFail("Could not reveal real OCR region \(region.identifier) within the scroll bound.")
+                return
+            }
+            XCTAssertEqual(button.label, region.text,
+                           "The cached OCR region changed before selection.")
+            button.tap()
+        }
+        let regionAttachment = XCTAttachment(string: wordRegions.map {
+            "\($0.identifier): \($0.text)"
+        }.joined(separator: "\n"))
+        regionAttachment.name = "F2-selected-real-OCR-regions"
+        regionAttachment.lifetime = .keepAlways
+        add(regionAttachment)
         attachScreenshot(app, name: "01-selected-real-OCR-region")
 
         let review = app.buttons["ocr.selection.review"]
@@ -74,6 +116,9 @@ final class OCRWorkflowUITests: XCTestCase {
         waitUntilReady(confirm)
         confirm.tap()
         let note = app.textViews["note.editor.text"]
+        let noteForm = app.descendants(matching: .any)
+            .matching(identifier: "note.editor.form").firstMatch
+        reveal(note, in: noteForm, scrollingUp: true)
         waitUntilReady(note)
         replaceSingleLineText(in: note, with: noteText)
         attachScreenshot(app, name: "03-excerpt-and-note-before-save")
@@ -101,14 +146,79 @@ final class OCRWorkflowUITests: XCTestCase {
         waitUntilReady(storedEntry)
         storedEntry.tap()
         let restoredNote = app.textViews["note.editor.text"]
+        reveal(restoredNote, in: noteForm, scrollingUp: true)
         waitUntilReady(restoredNote)
         XCTAssertEqual(restoredNote.value as? String, noteText)
-        XCTAssertTrue(app.staticTexts[excerptText].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(
-            format: "label ==[c] %@", originalText
-        )).firstMatch.waitForExistence(timeout: 15),
-                      "The preserved original OCR text was not shown when reopening the excerpt.")
+        let preservedOriginal = app.staticTexts["note.editor.originalOCR"]
+        reveal(preservedOriginal, in: noteForm, scrollingUp: false)
+        XCTAssertEqual(preservedOriginal.label.lowercased(), originalText.lowercased())
+        let restoredExcerpt = app.staticTexts["note.editor.excerpt"]
+        reveal(restoredExcerpt, in: noteForm, scrollingUp: false)
+        XCTAssertEqual(restoredExcerpt.label, excerptText)
         attachScreenshot(app, name: "06-restored-excerpt-note-and-source")
+    }
+
+    @MainActor
+    private func reveal(_ element: XCUIElement, in scrollView: XCUIElement,
+                        scrollingUp: Bool, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(scrollView.waitForExistence(timeout: 15), file: file, line: line)
+        for _ in 0..<6 {
+            if element.exists && element.isHittable { return }
+            if scrollingUp { scrollView.swipeUp() } else { scrollView.swipeDown() }
+        }
+        XCTAssertTrue(element.exists && element.isHittable,
+                      "Required form field could not be revealed by scrolling.", file: file, line: line)
+    }
+
+    private struct ObservedRegion {
+        let identifier: String
+        let lineIndex: Int
+        let regionIndex: Int
+        let text: String
+    }
+
+    @MainActor
+    private func observedRegionButtons(in app: XCUIApplication) -> [ObservedRegion] {
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "ocr.region."))
+            .allElementsBoundByIndex.compactMap { button in
+                let identifier = button.identifier
+                let components = identifier.split(separator: ".")
+                guard components.count == 4,
+                      let lineIndex = Int(components[2]), lineIndex >= 0,
+                      let regionIndex = Int(components[3]), regionIndex >= 0 else { return nil }
+                let text = button.label
+                guard !text.isEmpty else { return nil }
+                return ObservedRegion(identifier: identifier, lineIndex: lineIndex,
+                                      regionIndex: regionIndex, text: text)
+            }
+    }
+
+    private func regionComesBefore(_ lhs: ObservedRegion, _ rhs: ObservedRegion) -> Bool {
+        lhs.lineIndex == rhs.lineIndex
+            ? lhs.regionIndex < rhs.regionIndex : lhs.lineIndex < rhs.lineIndex
+    }
+
+    private func exactRegionSequence(for word: String,
+                                     among observed: [ObservedRegion]) -> [ObservedRegion]? {
+        let ordered = observed.sorted(by: regionComesBefore)
+        if let wholeWord = ordered.first(where: { $0.text.lowercased() == word.lowercased() }) {
+            return [wholeWord]
+        }
+        let target = word.lowercased()
+        for start in ordered.indices {
+            let first = ordered[start]
+            var sequence: [ObservedRegion] = []
+            var text = ""
+            for region in ordered[start...] {
+                guard region.lineIndex == first.lineIndex,
+                      region.regionIndex == first.regionIndex + sequence.count else { break }
+                text += region.text.lowercased()
+                guard target.hasPrefix(text) else { break }
+                sequence.append(region)
+                if text == target { return sequence }
+            }
+        }
+        return nil
     }
 
     @MainActor
