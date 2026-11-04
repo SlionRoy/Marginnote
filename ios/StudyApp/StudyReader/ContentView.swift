@@ -11,6 +11,9 @@ struct ContentView: View {
 
     @EnvironmentObject private var session: StudySession
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @State private var isImmersive = false
+    @State private var showingReadingControls = false
     @State private var showingImporter = false
     @State private var showingArchiveImporter = false
     @State private var showingArchiveExporter = false
@@ -23,23 +26,43 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
+            GeometryReader { viewport in
             Group {
                 if session.document != nil {
-                    if sizeClass == .regular {
-                        HStack(spacing: 0) {
-                            PDFReaderView(pdfView: session.pdfView)
+                    HStack(spacing: 0) {
+                        PDFReaderView(pdfView: session.pdfView,
+                                      observesReadingTaps: isImmersive) {
+                            showingReadingControls.toggle()
+                        }
+                        if sizeClass == .regular && !isImmersive {
                             Divider()
                             excerptList.frame(width: 320)
                         }
-                    } else {
-                        PDFReaderView(pdfView: session.pdfView)
                     }
+                    .ignoresSafeArea(.container, edges: isImmersive ? .all : [])
                 } else {
                     ContentUnavailableView("还没有 PDF", systemImage: "doc.text",
                                            description: Text("导入 PDF，选择文字或识别扫描页。"))
                 }
             }
+            // Keep controls in the safe viewport; only the PDF extends to screen edges.
+            .frame(width: viewport.size.width, height: viewport.size.height)
             .navigationTitle("PDF 学习")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(isImmersive ? .hidden : .visible, for: .navigationBar)
+            .statusBarHidden(isImmersive)
+            .persistentSystemOverlays(isImmersive ? .hidden : .automatic)
+            .overlay(alignment: .topTrailing) {
+                if isImmersive && (showingReadingControls || voiceOverEnabled) {
+                    exitReadingButton.padding(12)
+                }
+            }
+            .task(id: showingReadingControls) {
+                guard showingReadingControls else { return }
+                do { try await Task.sleep(for: .seconds(5)) }
+                catch { return }
+                showingReadingControls = false
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
@@ -75,6 +98,13 @@ struct ContentView: View {
                 }
                 if session.document != nil {
                     ToolbarItemGroup(placement: .topBarTrailing) {
+                        Button {
+                            showingReadingControls = false
+                            isImmersive = true
+                        } label: {
+                            Label("全屏阅读", systemImage: "arrow.up.left.and.arrow.down.right")
+                        }
+                        .accessibilityIdentifier("reader.enterFullscreen")
                         Button { session.excerptCurrentSelection() } label: {
                             Label("摘录选区", systemImage: "highlighter")
                         }.disabled(session.isBusy)
@@ -191,7 +221,25 @@ struct ContentView: View {
             } message: {
                 Text(session.errorMessage ?? session.infoMessage ?? "未知结果")
             }
+            }
         }
+    }
+
+    private var exitReadingButton: some View {
+        Button {
+            isImmersive = false
+            showingReadingControls = false
+        } label: {
+            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                .font(.body.weight(.semibold))
+                .frame(width: 48, height: 48)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .modifier(ReadingControlGlass())
+        .accessibilityLabel("退出全屏阅读")
+        .accessibilityHint("恢复文件、摘录和识别工具栏")
+        .accessibilityIdentifier("reader.exitFullscreen")
     }
 
     private var excerptList: some View {
@@ -225,6 +273,18 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+    }
+}
+
+private struct ReadingControlGlass: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: .capsule)
+        } else {
+            content.background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().stroke(.primary.opacity(0.12), lineWidth: 0.5))
         }
     }
 }

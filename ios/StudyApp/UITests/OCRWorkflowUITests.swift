@@ -18,6 +18,104 @@ final class OCRWorkflowUITests: XCTestCase {
     }
 
     @MainActor
+    func testImmersiveReadingControls() throws {
+        // This standard simulator case assumes VoiceOver is off. The accessible
+        // always-visible exit variant needs a separate accessibility session.
+        let app = XCUIApplication()
+        app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+
+        let fileMenu = app.buttons["reader.fileMenu"]
+        let menuReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            fileMenu.exists && fileMenu.isEnabled
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [menuReady], timeout: 15), .completed)
+        fileMenu.tap()
+        let sample = app.buttons["reader.openSample"]
+        XCTAssertTrue(sample.waitForExistence(timeout: 10))
+        sample.tap()
+
+        let pdf = app.descendants(matching: .any)
+            .matching(identifier: "reader.pdfView").firstMatch
+        let enter = app.buttons["reader.enterFullscreen"]
+        let exit = app.buttons["reader.exitFullscreen"]
+        let navigationBar = app.navigationBars.firstMatch
+        let readerReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            pdf.exists && pdf.frame.height > 0 && enter.exists && enter.isEnabled
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [readerReady], timeout: 15), .completed,
+                       "The bundled scan must open before testing reading controls.")
+        let windowFrame = app.windows.firstMatch.frame
+        let regularFrame = pdf.frame
+        XCTAssertGreaterThan(windowFrame.height, 480)
+        XCTAssertTrue(navigationBar.exists)
+        XCTAssertFalse(exit.exists)
+        attachScreenshot(app, name: "fullscreen-00-normal-reader")
+
+        enter.tap()
+        let fullscreenReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard pdf.exists else { return false }
+            let frame = pdf.frame
+            return !navigationBar.exists && !enter.exists && !fileMenu.exists
+                && abs(frame.minX - windowFrame.minX) <= 4
+                && abs(frame.maxX - windowFrame.maxX) <= 4
+                && abs(frame.minY - windowFrame.minY) <= 4
+                && abs(frame.maxY - windowFrame.maxY) <= 4
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [fullscreenReady], timeout: 10), .completed,
+                       "Fullscreen must hide navigation and extend the PDF to the window edges.")
+        let fullscreenFrame = pdf.frame
+        XCTAssertGreaterThan(fullscreenFrame.height, regularFrame.height + 20,
+                             "Hiding toolbar labels alone must not count as expanding the reader.")
+        XCTAssertFalse(exit.exists, "Entering fullscreen should initially leave the page unobstructed.")
+        attachScreenshot(app, name: "fullscreen-01-page-fills-window")
+
+        let firstTapTime = ProcessInfo.processInfo.systemUptime
+        pdf.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).tap()
+        XCTAssertTrue(exit.waitForExistence(timeout: 3),
+                      "One PDF tap must reveal the exit control.")
+        attachScreenshot(app, name: "fullscreen-02-exit-control-visible")
+        // Poll one existence query, without repeatedly asking for hittability.
+        // The timer starts in the app; this upper bound allows UI observation lag.
+        let automaticallyHidden = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in !exit.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [automaticallyHidden], timeout: 8), .completed,
+                       "The exit control should disappear automatically after about five seconds.")
+        let hideObservedAfterTap = ProcessInfo.processInfo.systemUptime - firstTapTime
+        XCTAssertGreaterThanOrEqual(hideObservedAfterTap, 4,
+                                    "The control must not vanish immediately after it appears.")
+        XCTAssertFalse(enter.exists, "Auto-hiding the exit control must keep fullscreen active.")
+        attachScreenshot(app, name: "fullscreen-03-controls-auto-hidden")
+
+        // Reveal a fresh control and use it immediately; screenshots or repeated
+        // readiness checks must not consume the next five-second visibility window.
+        pdf.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).tap()
+        XCTAssertTrue(exit.waitForExistence(timeout: 3))
+        exit.tap()
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard pdf.exists else { return false }
+            return navigationBar.exists && fileMenu.exists && enter.exists
+                && app.buttons["ocr.recognizePage"].exists && !exit.exists
+                && abs(pdf.frame.height - regularFrame.height) <= 4
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 10), .completed,
+                       "Exiting fullscreen must restore the reading toolbar and normal PDF viewport.")
+        attachScreenshot(app, name: "fullscreen-04-toolbar-restored")
+
+        let frames = XCTAttachment(string: """
+            Window: \(windowFrame)
+            Regular PDF: \(regularFrame)
+            Fullscreen PDF: \(fullscreenFrame)
+            Restored PDF: \(pdf.frame)
+            Automatic hide observed \(hideObservedAfterTap) seconds after the first tap began.
+            """)
+        frames.name = "fullscreen-viewport-and-control-timing"
+        frames.lifetime = .keepAlways
+        add(frames)
+    }
+
+    @MainActor
     func testOCRWordCorrectionAndNoteSurviveRelaunch() throws {
         let app = XCUIApplication()
         app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
