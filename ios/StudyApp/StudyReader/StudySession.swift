@@ -18,6 +18,10 @@ final class StudySession: ObservableObject {
     @Published var infoMessage: String?
     @Published private(set) var isBusy = false
     @Published var ocrOptions = OCRRecognitionOptions()
+    @Published private(set) var isDetectingRegion = false
+    private var regionRequestID = UUID()
+    private var regionCache: [Int: [PageRegion]] = [:]
+    private var regionAnnotation: (page: PDFPage, annotation: PDFAnnotation)?
 
     private let store = ExcerptFileStore(
         fileURL: DocumentImport.supportDirectory.appendingPathComponent("excerpts.json"))
@@ -113,6 +117,76 @@ final class StudySession: ObservableObject {
         }
     }
 
+    func selectPageRegion(_ page: PDFPage, point: CGPoint) {
+        guard let document, let documentID, page.rotation % 360 == 0 else { return }
+        let pageIndex = document.index(for: page)
+        let bounds = page.bounds(for: .cropBox)
+        guard pageIndex != NSNotFound, bounds.width > 0, bounds.height > 0,
+              bounds.contains(point) else { return }
+        let normalized = CGPoint(x: (point.x - bounds.minX) / bounds.width,
+                                 y: (bounds.maxY - point.y) / bounds.height)
+        regionRequestID = UUID()
+        let requestID = regionRequestID
+        clearRegionSelection()
+        if let cached = regionCache[pageIndex] {
+            displayRegion(PageRegionDetector.hit(normalized, regions: cached), on: page)
+            return
+        }
+        do {
+            let image = try OCRService.render(page)
+            let options = ocrOptions
+            isDetectingRegion = true
+            Task {
+                do {
+                    let regions = try await Task.detached(priority: .userInitiated) {
+                        try PageRegionDetector.detect(image, documentID: documentID,
+                                                      pageIndex: pageIndex, options: options)
+                    }.value
+                    guard regionRequestID == requestID, self.document === document else { return }
+                    isDetectingRegion = false
+                    regionCache[pageIndex] = regions
+                    displayRegion(PageRegionDetector.hit(normalized, regions: regions), on: page)
+                } catch {
+                    guard regionRequestID == requestID else { return }
+                    isDetectingRegion = false
+                    errorMessage = error.localizedDescription
+                }
+            }
+        } catch {
+            isDetectingRegion = false
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func clearRegionSelection() {
+        if let old = regionAnnotation { old.page.removeAnnotation(old.annotation) }
+        regionAnnotation = nil
+        isDetectingRegion = false
+    }
+
+    private func displayRegion(_ region: PageRegion?, on page: PDFPage) {
+        guard let region else { return }
+        let pageBounds = page.bounds(for: .cropBox)
+        let r = region.rect
+        let rectangle = CGRect(x: pageBounds.minX + r.minX * pageBounds.width,
+                               y: pageBounds.maxY - r.maxY * pageBounds.height,
+                               width: r.width * pageBounds.width,
+                               height: r.height * pageBounds.height)
+            .insetBy(dx: -3, dy: -3).intersection(pageBounds)
+        guard !rectangle.isNull, !rectangle.isEmpty else { return }
+        let annotation = PDFAnnotation(bounds: rectangle, forType: .square, withProperties: nil)
+        annotation.color = region.kind == .text ? .systemBlue : .systemPurple
+        annotation.interiorColor = .clear
+        let border = PDFBorder()
+        border.style = .dashed
+        border.lineWidth = 1.5
+        border.dashPattern = [3, 3]
+        annotation.border = border
+        annotation.shouldPrint = false
+        page.addAnnotation(annotation)
+        regionAnnotation = (page, annotation)
+    }
+
     func excerptCurrentSelection() {
         guard let document, let documentID else { return }
         guard let selection = pdfView.currentSelection else {
@@ -199,6 +273,9 @@ final class StudySession: ObservableObject {
     }
 
     private func open(_ pdf: PDFDocument, imported: ImportedPDF) {
+        regionRequestID = UUID()
+        clearRegionSelection()
+        regionCache.removeAll()
         clearAnnotations()
         document = pdf
         documentID = imported.id

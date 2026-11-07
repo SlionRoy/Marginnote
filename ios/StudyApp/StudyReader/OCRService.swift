@@ -191,3 +191,76 @@ enum OCRService {
                                    ocrOriginalText: candidates.map(\.text).joined(separator: "\n"))
     }
 }
+
+
+// Candidate boxes use top-left normalized page coordinates. The grouping is a
+// conservative geometric heuristic, not a claim about another app's algorithm.
+struct PageRegion {
+    enum Kind: Equatable { case text, graphic }
+    let rect: CGRect
+    let kind: Kind
+}
+
+enum PageRegionDetector {
+    static func paragraphs(_ lines: [CGRect]) -> [CGRect] {
+        let ordered = lines.filter { !$0.isNull && $0.width > 0 && $0.height > 0 }
+            .sorted { $0.minY == $1.minY ? $0.minX < $1.minX : $0.minY < $1.minY }
+        var groups: [(bounds: CGRect, last: CGRect)] = []
+        for line in ordered {
+            var best: Int?
+            var distance = CGFloat.greatestFiniteMagnitude
+            for i in groups.indices {
+                let previous = groups[i].last
+                let gap = line.minY - previous.maxY
+                let overlap = min(line.maxX, previous.maxX) - max(line.minX, previous.minX)
+                let aligned = overlap >= min(line.width, previous.width) * 0.35
+                if gap >= -min(line.height, previous.height) * 0.25,
+                   gap <= max(line.height, previous.height) * 0.9,
+                   aligned, gap < distance {
+                    best = i
+                    distance = gap
+                }
+            }
+            if let best {
+                groups[best].bounds = groups[best].bounds.union(line)
+                groups[best].last = line
+            } else {
+                groups.append((line, line))
+            }
+        }
+        return groups.map(\.bounds)
+    }
+
+    static func hit(_ point: CGPoint, regions: [PageRegion]) -> PageRegion? {
+        // Text takes precedence over a larger visual candidate containing it.
+        let hits = regions.filter { $0.rect.insetBy(dx: -0.008, dy: -0.008).contains(point) }
+        return hits.sorted {
+            if $0.kind != $1.kind { return $0.kind == .text }
+            return $0.rect.width * $0.rect.height < $1.rect.width * $1.rect.height
+        }.first
+    }
+
+    static func detect(_ image: CGImage, documentID: UUID, pageIndex: Int,
+                       options: OCRRecognitionOptions) throws -> [PageRegion] {
+        let lines = try OCRService.recognize(image, documentID: documentID,
+                                             pageIndex: pageIndex, options: options)
+        let textRects = lines.map { candidate in
+            CGRect(x: candidate.rect.x, y: candidate.rect.y,
+                   width: candidate.rect.width, height: candidate.rect.height)
+        }
+        var result = paragraphs(textRects).map { PageRegion(rect: $0, kind: .text) }
+        // Objectness is only a visual proposal: it may miss diagrams or combine objects.
+        let request = VNGenerateObjectnessBasedSaliencyImageRequest()
+        if (try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])) != nil {
+            for object in request.results?.first?.salientObjects ?? [] {
+                if let r = try? OCRService.unitRect(fromVision: object.boundingBox) {
+                    let box = CGRect(x: r.x, y: r.y, width: r.width, height: r.height)
+                    if box.width * box.height >= 0.01 && box.width * box.height <= 0.9 {
+                        result.append(PageRegion(rect: box, kind: .graphic))
+                    }
+                }
+            }
+        }
+        return result
+    }
+}

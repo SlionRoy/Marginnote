@@ -182,4 +182,36 @@ final class SelectionMapperTests: XCTestCase {
         let values = try directory.resourceValues(forKeys: [.isExcludedFromBackupKey])
         XCTAssertEqual(values.isExcludedFromBackup, true)
     }
+    func testPageRegionGroupingAndHitPriority() throws {
+        let lines = [CGRect(x: 0.10, y: 0.10, width: 0.70, height: 0.02),
+                     CGRect(x: 0.12, y: 0.125, width: 0.68, height: 0.02),
+                     CGRect(x: 0.10, y: 0.22, width: 0.70, height: 0.02),
+                     CGRect(x: 0.82, y: 0.125, width: 0.15, height: 0.02)]
+        let paragraphs = PageRegionDetector.paragraphs(lines)
+        XCTAssertEqual(paragraphs.count, 3)
+        let first = try XCTUnwrap(paragraphs.first { $0.contains(CGPoint(x: 0.2, y: 0.11)) })
+        XCTAssertTrue(first.contains(CGPoint(x: 0.2, y: 0.13)))
+        XCTAssertFalse(first.contains(CGPoint(x: 0.2, y: 0.23)))
+        let text = PageRegion(rect: first, kind: .text)
+        let graphic = PageRegion(rect: CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.3), kind: .graphic)
+        XCTAssertEqual(PageRegionDetector.hit(CGPoint(x: 0.2, y: 0.11), regions: [graphic, text])?.kind, .text)
+        XCTAssertEqual(PageRegionDetector.hit(CGPoint(x: 0.9, y: 0.2), regions: [graphic, text])?.kind, .graphic)
+        XCTAssertNil(PageRegionDetector.hit(CGPoint(x: 0.5, y: 0.8), regions: [graphic, text]))
+    }
+
+    func testScannedPageProducesTappableTextRegions() async throws {
+        let fixture = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "F2_image_only", withExtension: "pdf"))
+        let image = try await MainActor.run { () throws -> CGImage in
+            let doc = try XCTUnwrap(PDFDocument(url: fixture))
+            return try OCRService.render(try XCTUnwrap(doc.page(at: 0)))
+        }
+        let regions = try PageRegionDetector.detect(image, documentID: UUID(), pageIndex: 0,
+                                                     options: OCRRecognitionOptions())
+        let text = try XCTUnwrap(regions.first { $0.kind == .text })
+        XCTAssertEqual(PageRegionDetector.hit(CGPoint(x: text.rect.midX, y: text.rect.midY),
+                                              regions: regions)?.kind, .text)
+        XCTAssertTrue(text.rect.minX >= 0 && text.rect.maxX <= 1 &&
+                      text.rect.minY >= 0 && text.rect.maxY <= 1)
+    }
+
 }

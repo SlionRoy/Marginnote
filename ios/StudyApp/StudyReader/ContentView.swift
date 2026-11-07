@@ -31,9 +31,11 @@ struct ContentView: View {
                 if session.document != nil {
                     HStack(spacing: 0) {
                         PDFReaderView(pdfView: session.pdfView,
-                                      observesReadingTaps: isImmersive) {
-                            showingReadingControls.toggle()
-                        }
+                                      observesReadingTaps: isImmersive,
+                                      onReadingTap: { showingReadingControls.toggle() },
+                                      onPageTap: { page, point in
+                                          session.selectPageRegion(page, point: point)
+                                      })
                         if sizeClass == .regular && !isImmersive {
                             Divider()
                             excerptList.frame(width: 320)
@@ -52,6 +54,15 @@ struct ContentView: View {
             .toolbar(isImmersive ? .hidden : .visible, for: .navigationBar)
             .statusBarHidden(isImmersive)
             .persistentSystemOverlays(isImmersive ? .hidden : .automatic)
+            .overlay(alignment: .bottom) {
+                if session.isDetectingRegion {
+                    Text("正在识别页面区域…")
+                        .font(.caption).padding(8)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.bottom, 16)
+                        .accessibilityIdentifier("reader.regionProgress")
+                }
+            }
             .overlay(alignment: .topTrailing) {
                 if isImmersive && (showingReadingControls || voiceOverEnabled) {
                     exitReadingButton.padding(12)
