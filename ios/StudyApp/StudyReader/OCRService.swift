@@ -72,13 +72,13 @@ enum OCRServiceError: LocalizedError {
 enum OCRService {
     /// PDFKit rendering stays on the UI actor; Vision receives only a rendered image.
     @MainActor
-    static func render(_ page: PDFPage) throws -> CGImage {
+    static func render(_ page: PDFPage, maxDimension: CGFloat = 2048) throws -> CGImage {
         guard page.rotation % 360 == 0 else { throw OCRServiceError.rotatedPage }
         let bounds = page.bounds(for: .cropBox)
         guard bounds.width > 0, bounds.height > 0 else {
             throw OCRServiceError.invalidPage
         }
-        let scale = 2048 / max(bounds.width, bounds.height)
+        let scale = maxDimension / max(bounds.width, bounds.height)
         let size = CGSize(width: max(1, bounds.width * scale),
                           height: max(1, bounds.height * scale))
         guard let image = page.thumbnail(of: size, for: .cropBox).cgImage else {
@@ -240,27 +240,118 @@ enum PageRegionDetector {
         }.first
     }
 
-    static func detect(_ image: CGImage, documentID: UUID, pageIndex: Int,
-                       options: OCRRecognitionOptions) throws -> [PageRegion] {
-        let lines = try OCRService.recognize(image, documentID: documentID,
-                                             pageIndex: pageIndex, options: options)
-        let textRects = lines.map { candidate in
-            CGRect(x: candidate.rect.x, y: candidate.rect.y,
-                   width: candidate.rect.width, height: candidate.rect.height)
+    // PDFKit geometry is preferred when a usable text layer exists. The method
+    // returns normalized top-left rectangles, not recognized or copied text.
+    @MainActor
+    static func nativeTextLines(_ page: PDFPage) -> [CGRect] {
+        let bounds = page.bounds(for: .cropBox)
+        guard bounds.width > 0, bounds.height > 0,
+              let selection = page.selection(for: bounds) else { return [] }
+        return selection.selectionsByLine().compactMap { line in
+            guard let text = line.string,
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            let r = line.bounds(for: page).intersection(bounds)
+            guard !r.isNull, r.width > 0, r.height > 0 else { return nil }
+            return CGRect(x: (r.minX - bounds.minX) / bounds.width,
+                          y: (bounds.maxY - r.maxY) / bounds.height,
+                          width: r.width / bounds.width, height: r.height / bounds.height)
         }
-        var result = paragraphs(textRects).map { PageRegion(rect: $0, kind: .text) }
-        // Objectness is only a visual proposal: it may miss diagrams or combine objects.
-        let request = VNGenerateObjectnessBasedSaliencyImageRequest()
-        if (try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])) != nil {
-            for object in request.results?.first?.salientObjects ?? [] {
-                if let r = try? OCRService.unitRect(fromVision: object.boundingBox) {
-                    let box = CGRect(x: r.x, y: r.y, width: r.width, height: r.height)
-                    if box.width * box.height >= 0.01 && box.width * box.height <= 0.9 {
-                        result.append(PageRegion(rect: box, kind: .graphic))
-                    }
+    }
+
+    // Coarse connected-ink proposals. Text boxes are masked before joining
+    // nearby graphic elements; this deliberately remains an approximate layout
+    // heuristic and can join unrelated graphics or miss pale artwork.
+    static func graphicRegions(pixels: [UInt8], width: Int, height: Int,
+                               excluding lines: [CGRect]) -> [CGRect] {
+        guard width > 16, height > 16, pixels.count == width * height else { return [] }
+        var ink = pixels.map { $0 < 200 }
+        for r in lines {
+            let x0 = max(0, Int(floor(r.minX * CGFloat(width))) - 1)
+            let x1 = min(width, Int(ceil(r.maxX * CGFloat(width))) + 1)
+            let y0 = max(0, Int(floor(r.minY * CGFloat(height))) - 1)
+            let y1 = min(height, Int(ceil(r.maxY * CGFloat(height))) + 1)
+            guard x0 < x1, y0 < y1 else { continue }
+            for y in y0..<y1 { for x in x0..<x1 { ink[y * width + x] = false } }
+        }
+        let radius = max(1, Int((CGFloat(min(width, height)) * 0.023).rounded()))
+        var horizontal = [Bool](repeating: false, count: ink.count)
+        var joined = [Bool](repeating: false, count: ink.count)
+        for y in 0..<height { for x in 0..<width where ink[y * width + x] {
+            for xx in max(0, x-radius)...min(width-1, x+radius) { horizontal[y * width + xx] = true }
+        }}
+        for y in 0..<height { for x in 0..<width where horizontal[y * width + x] {
+            for yy in max(0, y-radius)...min(height-1, y+radius) { joined[yy * width + x] = true }
+        }}
+        var regions: [CGRect] = []
+        for start in joined.indices where joined[start] {
+            joined[start] = false
+            var queue = [start], cursor = 0, count = 0
+            var minX = width, minY = height, maxX = -1, maxY = -1
+            while cursor < queue.count {
+                let current = queue[cursor]; cursor += 1
+                let x = current % width, y = current / width
+                if ink[current] {
+                    count += 1; minX = min(minX, x); maxX = max(maxX, x)
+                    minY = min(minY, y); maxY = max(maxY, y)
                 }
+                if x > 0 && joined[current-1] { joined[current-1] = false; queue.append(current-1) }
+                if x+1 < width && joined[current+1] { joined[current+1] = false; queue.append(current+1) }
+                if y > 0 && joined[current-width] { joined[current-width] = false; queue.append(current-width) }
+                if y+1 < height && joined[current+width] { joined[current+width] = false; queue.append(current+width) }
+            }
+            guard count >= 30, maxX >= minX, maxY >= minY else { continue }
+            let r = CGRect(x: CGFloat(minX)/CGFloat(width), y: CGFloat(minY)/CGFloat(height),
+                           width: CGFloat(maxX-minX+1)/CGFloat(width),
+                           height: CGFloat(maxY-minY+1)/CGFloat(height))
+            let area = r.width * r.height
+            if r.width >= 0.10 && r.height >= 0.035 && area >= 0.01 && area <= 0.8 {
+                regions.append(r)
             }
         }
+        return regions
+    }
+
+    static func rasterGraphicRegions(_ image: CGImage, excluding lines: [CGRect]) -> [CGRect] {
+        let width = 256, height = 256
+        var pixels = [UInt8](repeating: 255, count: width * height)
+        let success = pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let context = CGContext(data: raw.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            context.setFillColor(gray: 1, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            context.translateBy(x: 0, y: CGFloat(height))
+            context.scaleBy(x: 1, y: -1)
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        return success ? graphicRegions(pixels: pixels, width: width, height: height,
+                                         excluding: lines) : []
+    }
+
+    static func detect(_ image: CGImage, documentID: UUID, pageIndex: Int,
+                       options: OCRRecognitionOptions, nativeLines: [CGRect] = []) throws -> [PageRegion] {
+        try Task.checkCancellation()
+        let textRects: [CGRect]
+        if nativeLines.isEmpty {
+            // Only line boxes are needed here; do not compute a box per character.
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .fast
+            request.usesLanguageCorrection = false
+            let supported = try request.supportedRecognitionLanguages()
+            let preferred = ["zh-Hans", "en-US"].filter { supported.contains($0) }
+            if !preferred.isEmpty { request.recognitionLanguages = preferred }
+            try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+            textRects = (request.results ?? []).compactMap { observation in
+                guard let unit = try? OCRService.unitRect(fromVision: observation.boundingBox) else { return nil }
+                return CGRect(x: unit.x, y: unit.y, width: unit.width, height: unit.height)
+            }
+        } else { textRects = nativeLines }
+        try Task.checkCancellation()
+        var result = paragraphs(textRects).map { PageRegion(rect: $0, kind: .text) }
+        let graphics = rasterGraphicRegions(image, excluding: textRects)
+        try Task.checkCancellation()
+        result.append(contentsOf: graphics.map { PageRegion(rect: $0, kind: .graphic) })
         return result
     }
 }

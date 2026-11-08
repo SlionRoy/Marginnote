@@ -20,7 +20,9 @@ final class StudySession: ObservableObject {
     @Published var ocrOptions = OCRRecognitionOptions()
     @Published private(set) var isDetectingRegion = false
     private var regionRequestID = UUID()
+    private var regionWork: Task<[PageRegion], Error>?
     private var regionCache: [Int: [PageRegion]] = [:]
+    private var nativeLineCache: [Int: [CGRect]] = [:]
     private var regionAnnotation: (page: PDFPage, annotation: PDFAnnotation)?
 
     private let store = ExcerptFileStore(
@@ -125,6 +127,8 @@ final class StudySession: ObservableObject {
               bounds.contains(point) else { return }
         let normalized = CGPoint(x: (point.x - bounds.minX) / bounds.width,
                                  y: (bounds.maxY - point.y) / bounds.height)
+        regionWork?.cancel()
+        regionWork = nil
         regionRequestID = UUID()
         let requestID = regionRequestID
         clearRegionSelection()
@@ -132,23 +136,41 @@ final class StudySession: ObservableObject {
             displayRegion(PageRegionDetector.hit(normalized, regions: cached), on: page)
             return
         }
+        let nativeLines: [CGRect]
+        if let stored = nativeLineCache[pageIndex] { nativeLines = stored }
+        else {
+            nativeLines = PageRegionDetector.nativeTextLines(page)
+            nativeLineCache[pageIndex] = nativeLines
+        }
+        let textRegions = PageRegionDetector.paragraphs(nativeLines).map {
+            PageRegion(rect: $0, kind: .text)
+        }
+        if let text = PageRegionDetector.hit(normalized, regions: textRegions) {
+            displayRegion(text, on: page)
+            return
+        }
         do {
-            let image = try OCRService.render(page)
+            let image = try OCRService.render(page, maxDimension: 1024)
             let options = ocrOptions
             isDetectingRegion = true
+            let work = Task.detached(priority: .userInitiated) {
+                try PageRegionDetector.detect(image, documentID: documentID,
+                                              pageIndex: pageIndex, options: options,
+                                              nativeLines: nativeLines)
+            }
+            regionWork = work
             Task {
                 do {
-                    let regions = try await Task.detached(priority: .userInitiated) {
-                        try PageRegionDetector.detect(image, documentID: documentID,
-                                                      pageIndex: pageIndex, options: options)
-                    }.value
+                    let regions = try await work.value
                     guard regionRequestID == requestID, self.document === document else { return }
                     isDetectingRegion = false
+                    regionWork = nil
                     regionCache[pageIndex] = regions
                     displayRegion(PageRegionDetector.hit(normalized, regions: regions), on: page)
                 } catch {
                     guard regionRequestID == requestID else { return }
                     isDetectingRegion = false
+                    regionWork = nil
                     errorMessage = error.localizedDescription
                 }
             }
@@ -273,9 +295,12 @@ final class StudySession: ObservableObject {
     }
 
     private func open(_ pdf: PDFDocument, imported: ImportedPDF) {
+        regionWork?.cancel()
+        regionWork = nil
         regionRequestID = UUID()
         clearRegionSelection()
         regionCache.removeAll()
+        nativeLineCache.removeAll()
         clearAnnotations()
         document = pdf
         documentID = imported.id
