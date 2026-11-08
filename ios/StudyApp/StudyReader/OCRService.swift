@@ -320,8 +320,7 @@ enum PageRegionDetector {
                 bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
             context.setFillColor(gray: 1, alpha: 1)
             context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-            context.translateBy(x: 0, y: CGFloat(height))
-            context.scaleBy(x: 1, y: -1)
+            // Bitmap rows and CGImage source rows share the same top-left order.
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
             return true
         }
