@@ -32,9 +32,9 @@ enum PageLayoutAnalyzer {
         return regions(lines: lines, nativeGraphics: graphics, image: image)
     }
 
-    /// Glyph geometry prevents a PDFKit line spanning the gutter from joining columns.
-    /// PDFKit indices and NSString offsets are UTF-16. Mismatched extraction falls back
-    /// to line selections instead of attaching guessed strings to glyphs.
+    /// PDFKit supplies typographic line bounds. Glyph ink bounds vary between
+    /// capitals, descenders and punctuation, so they must not define baselines.
+    /// Only wide lines need a horizontal glyph-gap check for a merged gutter.
     static func nativeLines(_ page: PDFPage) throws -> [LayoutTextLine] {
         let crop = page.bounds(for: .cropBox)
         guard crop.width > 0, crop.height > 0 else { return [] }
@@ -44,44 +44,45 @@ enum PageLayoutAnalyzer {
             CGRect(x: (r.minX - crop.minX) / crop.width, y: (crop.maxY - r.maxY) / crop.height,
                    width: r.width / crop.width, height: r.height / crop.height)
         }
-        guard count == text.length, count <= 60_000 else {
-            return page.selection(for: crop)?.selectionsByLine().compactMap {
-                let r = $0.bounds(for: page).intersection(crop)
-                guard valid(r), let s = $0.string else { return nil }
-                return LayoutTextLine(rect: normalized(r), text: s)
-            } ?? []
-        }
-        var glyphs: [LayoutTextLine] = []
-        for i in 0..<count {
-            if i % 512 == 0 { try Task.checkCancellation() }
-            let s = text.substring(with: NSRange(location: i, length: 1))
-            if s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
-            let r = page.characterBounds(at: i).intersection(crop)
-            if valid(r) { glyphs.append(LayoutTextLine(rect: normalized(r), text: s)) }
-        }
-        glyphs.sort { $0.rect.midY < $1.rect.midY }
-        var rows: [[LayoutTextLine]] = []
-        for glyph in glyphs {
-            if let index = rows.indices.reversed().prefix(6).first(where: {
-                abs(rows[$0][0].rect.midY - glyph.rect.midY) < min(rows[$0][0].rect.height, glyph.rect.height) * 0.4
-            }) { rows[index].append(glyph) }
-            else { rows.append([glyph]) }
-        }
         var result: [LayoutTextLine] = []
-        for row in rows {
-            let ordered = row.sorted { $0.rect.minX < $1.rect.minX }
-            var box = CGRect.null, string = "", previous: CGRect?
-            for glyph in ordered {
+        for selection in (page.selection(for: crop)?.selectionsByLine() ?? []).prefix(2401) {
+            try Task.checkCancellation()
+            let r = selection.bounds(for: page).intersection(crop)
+            guard valid(r), let string = selection.string,
+                  !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let line = LayoutTextLine(rect: normalized(r), text: string)
+            guard line.rect.width > 0.55, count == text.length, count <= 60_000 else {
+                result.append(line); continue
+            }
+            var glyphs: [(rect: CGRect, text: String)] = []
+            for part in 0..<selection.numberOfTextRanges(on: page) {
+                let range = selection.range(at: part, on: page)
+                guard range.location != NSNotFound, range.location >= 0,
+                      range.length >= 0, range.location <= count - range.length else { continue }
+                for i in range.location..<(range.location + range.length) {
+                    let character = text.substring(with: NSRange(location: i, length: 1))
+                    guard !character.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                    let glyph = page.characterBounds(at: i).intersection(r)
+                    if valid(glyph) { glyphs.append((glyph, character)) }
+                }
+            }
+            glyphs.sort { $0.rect.minX < $1.rect.minX }
+            var fragments: [LayoutTextLine] = [], box = CGRect.null, value = "", previous: CGRect?
+            for glyph in glyphs {
                 if let last = previous {
                     let gap = glyph.rect.minX - last.maxX
-                    // More than a word space: new column or independent diagram label.
-                    if gap > max(0.012, min(last.height, glyph.rect.height) * crop.height / crop.width * 0.95) {
-                        result.append(LayoutTextLine(rect: box, text: string)); box = .null; string = ""
-                    } else if gap > min(last.width, glyph.rect.width) * 0.28 { string += " " }
+                    if gap > max(crop.width * 0.012, r.height * 0.95) {
+                        fragments.append(LayoutTextLine(rect: normalized(box), text: value))
+                        box = .null; value = ""
+                    } else if gap > min(last.width, glyph.rect.width) * 0.28 { value += " " }
                 }
-                box = box.union(glyph.rect); string += glyph.text; previous = glyph.rect
+                box = box.union(CGRect(x: glyph.rect.minX, y: r.minY,
+                                       width: glyph.rect.width, height: r.height))
+                value += glyph.text; previous = glyph.rect
             }
-            if valid(box) { result.append(LayoutTextLine(rect: box, text: string)) }
+            if valid(box) { fragments.append(LayoutTextLine(rect: normalized(box), text: value)) }
+            // Preserve original extraction unless an actual horizontal split exists.
+            result.append(contentsOf: fragments.count > 1 ? fragments : [line])
         }
         return result
     }
@@ -127,7 +128,7 @@ enum PageLayoutAnalyzer {
                 let a = bounds(seed), b = bounds(flow)
                 return a == b || (abs(a.minY - b.minY) < 0.012 &&
                     abs(a.height - b.height) < 0.025 &&
-                    min(abs(a.maxX - b.minX), abs(b.maxX - a.minX)) < 0.10 &&
+                    min(abs(a.maxX - b.minX), abs(b.maxX - a.minX)) < 0.25 &&
                     !flow.contains { captionStart($0.text) })
             }
         }
@@ -332,9 +333,27 @@ enum PageLayoutAnalyzer {
                     }
                 }
             }
-            return components.filter { r in
+            let accepted = components.filter { r in
                 r.width > 0.09 && r.height > 0.045 && area(r) > 0.012 && area(r) < 0.72 &&
                 !barriers.contains { area(r.intersection($0)) > area($0) * 0.15 }
+            }
+            // Include a small visual breathing margin around the ink. Clip this
+            // margin at reading blocks, rather than swallowing a nearby caption.
+            return accepted.map { r in
+                var padded = r.insetBy(dx: -6 / CGFloat(width), dy: -6 / CGFloat(height)).intersection(unit)
+                for barrier in barriers where padded.intersects(barrier) && !r.intersects(barrier) {
+                    if barrier.minY >= r.maxY { padded.size.height = min(padded.maxY, barrier.minY - 0.002) - padded.minY }
+                    if barrier.maxY <= r.minY {
+                        let bottom = padded.maxY
+                        padded.origin.y = max(padded.minY, barrier.maxY + 0.002); padded.size.height = bottom - padded.minY
+                    }
+                    if barrier.minX >= r.maxX { padded.size.width = min(padded.maxX, barrier.minX - 0.002) - padded.minX }
+                    if barrier.maxX <= r.minX {
+                        let right = padded.maxX
+                        padded.origin.x = max(padded.minX, barrier.maxX + 0.002); padded.size.width = right - padded.minX
+                    }
+                }
+                return padded
             }
         }
     }
