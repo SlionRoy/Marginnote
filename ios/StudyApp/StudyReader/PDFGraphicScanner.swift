@@ -233,35 +233,35 @@ enum PDFGraphicScanner {
     private static func operatorTable() -> CGPDFOperatorTableRef? {
         guard let table = CGPDFOperatorTableCreate() else { return nil }
         CGPDFOperatorTableSetCallback(table, "q") { scanner, info in
-            guard let c = context(scanner, info) else { return }
+            guard let c = PDFGraphicScanner.context(scanner, info) else { return }
             guard c.stack.count < 128 else { c.invalid = true; return }
             c.stack.append(c.state)
         }
         CGPDFOperatorTableSetCallback(table, "Q") { scanner, info in
-            guard let c = context(scanner, info) else { return }
+            guard let c = PDFGraphicScanner.context(scanner, info) else { return }
             guard let state = c.stack.popLast() else { c.invalid = true; return }
             c.state = state
         }
         CGPDFOperatorTableSetCallback(table, "cm") { scanner, info in
-            guard let c = context(scanner, info) else { return }
-            guard let values = numbers(scanner, count: 6) else { c.invalid = true; return }
-            c.state.transform = matrix(values).concatenating(c.state.transform)
-            if !valid(c.state.transform) { c.invalid = true }
+            guard let c = PDFGraphicScanner.context(scanner, info) else { return }
+            guard let values = PDFGraphicScanner.numbers(scanner, count: 6) else { c.invalid = true; return }
+            c.state.transform = PDFGraphicScanner.matrix(values).concatenating(c.state.transform)
+            if !PDFGraphicScanner.valid(c.state.transform) { c.invalid = true }
         }
         CGPDFOperatorTableSetCallback(table, "Do") { scanner, info in
-            guard let c = context(scanner, info) else { return }
-            drawObject(scanner, context: c)
+            guard let c = PDFGraphicScanner.context(scanner, info) else { return }
+            PDFGraphicScanner.drawObject(scanner, context: c)
         }
         for op in ["m", "l"] {
             CGPDFOperatorTableSetCallback(table, op) { scanner, info in
-                guard let c = context(scanner, info), let xy = numbers(scanner, count: 2) else { return }
+                guard let c = PDFGraphicScanner.context(scanner, info), let xy = PDFGraphicScanner.numbers(scanner, count: 2) else { return }
                 let p = CGPoint(x: xy[0], y: xy[1]).applying(c.state.transform)
                 c.path = c.path.union(CGRect(origin: p, size: .zero))
                 c.pathCommands += 1; c.rectangleOnly = false
             }
         }
         CGPDFOperatorTableSetCallback(table, "re") { scanner, info in
-            guard let c = context(scanner, info), let v = numbers(scanner, count: 4) else { return }
+            guard let c = PDFGraphicScanner.context(scanner, info), let v = PDFGraphicScanner.numbers(scanner, count: 4) else { return }
             let r = CGRect(x: v[0], y: v[1], width: v[2], height: v[3]).standardized
             c.path = c.path.union(r.applying(c.state.transform))
             let t = c.state.transform
@@ -270,7 +270,7 @@ enum PDFGraphicScanner {
             c.rectangleOnly = c.pathCommands == 0 && axisAligned; c.pathCommands += 1
         }
         CGPDFOperatorTableSetCallback(table, "c") { scanner, info in
-            guard let c = context(scanner, info), let v = numbers(scanner, count: 6) else { return }
+            guard let c = PDFGraphicScanner.context(scanner, info), let v = PDFGraphicScanner.numbers(scanner, count: 6) else { return }
             for index in stride(from: 0, to: 6, by: 2) {
                 let p = CGPoint(x: v[index], y: v[index + 1]).applying(c.state.transform)
                 c.path = c.path.union(CGRect(origin: p, size: .zero))
@@ -279,7 +279,7 @@ enum PDFGraphicScanner {
         }
         for op in ["v", "y"] {
             CGPDFOperatorTableSetCallback(table, op) { scanner, info in
-                guard let c = context(scanner, info), let v = numbers(scanner, count: 4) else { return }
+                guard let c = PDFGraphicScanner.context(scanner, info), let v = PDFGraphicScanner.numbers(scanner, count: 4) else { return }
                 for index in [0, 2] {
                     let p = CGPoint(x: v[index], y: v[index + 1]).applying(c.state.transform)
                     c.path = c.path.union(CGRect(origin: p, size: .zero))
@@ -289,49 +289,49 @@ enum PDFGraphicScanner {
         }
         for op in ["W", "W*"] {
             CGPDFOperatorTableSetCallback(table, op) { scanner, info in
-                context(scanner, info)?.pendingClip = true
+                PDFGraphicScanner.context(scanner, info)?.pendingClip = true
             }
         }
         CGPDFOperatorTableSetCallback(table, "n") { scanner, info in
-            context(scanner, info)?.endPath(fill: false, stroke: false)
+            PDFGraphicScanner.context(scanner, info)?.endPath(fill: false, stroke: false)
         }
         for op in ["f", "F", "f*"] {
             CGPDFOperatorTableSetCallback(table, op) { scanner, info in
-                context(scanner, info)?.endPath(fill: true, stroke: false)
+                PDFGraphicScanner.context(scanner, info)?.endPath(fill: true, stroke: false)
             }
         }
         for op in ["S", "s"] {
             CGPDFOperatorTableSetCallback(table, op) { scanner, info in
-                context(scanner, info)?.endPath(fill: false, stroke: true)
+                PDFGraphicScanner.context(scanner, info)?.endPath(fill: false, stroke: true)
             }
         }
         for op in ["B", "B*", "b", "b*"] {
             CGPDFOperatorTableSetCallback(table, op) { scanner, info in
-                context(scanner, info)?.endPath(fill: true, stroke: true)
+                PDFGraphicScanner.context(scanner, info)?.endPath(fill: true, stroke: true)
             }
         }
         CGPDFOperatorTableSetCallback(table, "g") { scanner, info in
-            guard let c = context(scanner, info), let v = numbers(scanner, count: 1) else { return }
+            guard let c = PDFGraphicScanner.context(scanner, info), let v = PDFGraphicScanner.numbers(scanner, count: 1) else { return }
             c.state.whiteFill = v[0] >= 0.98
         }
         CGPDFOperatorTableSetCallback(table, "G") { scanner, info in
-            guard let c = context(scanner, info), let v = numbers(scanner, count: 1) else { return }
+            guard let c = PDFGraphicScanner.context(scanner, info), let v = PDFGraphicScanner.numbers(scanner, count: 1) else { return }
             c.state.whiteStroke = v[0] >= 0.98
         }
         CGPDFOperatorTableSetCallback(table, "rg") { scanner, info in
-            guard let c = context(scanner, info), let v = numbers(scanner, count: 3) else { return }
+            guard let c = PDFGraphicScanner.context(scanner, info), let v = PDFGraphicScanner.numbers(scanner, count: 3) else { return }
             c.state.whiteFill = v.allSatisfy { $0 >= 0.98 }
         }
         CGPDFOperatorTableSetCallback(table, "RG") { scanner, info in
-            guard let c = context(scanner, info), let v = numbers(scanner, count: 3) else { return }
+            guard let c = PDFGraphicScanner.context(scanner, info), let v = PDFGraphicScanner.numbers(scanner, count: 3) else { return }
             c.state.whiteStroke = v.allSatisfy { $0 >= 0.98 }
         }
         CGPDFOperatorTableSetCallback(table, "k") { scanner, info in
-            guard let c = context(scanner, info), let v = numbers(scanner, count: 4) else { return }
+            guard let c = PDFGraphicScanner.context(scanner, info), let v = PDFGraphicScanner.numbers(scanner, count: 4) else { return }
             c.state.whiteFill = v.allSatisfy { $0 <= 0.02 }
         }
         CGPDFOperatorTableSetCallback(table, "K") { scanner, info in
-            guard let c = context(scanner, info), let v = numbers(scanner, count: 4) else { return }
+            guard let c = PDFGraphicScanner.context(scanner, info), let v = PDFGraphicScanner.numbers(scanner, count: 4) else { return }
             c.state.whiteStroke = v.allSatisfy { $0 <= 0.02 }
         }
         // Count ignored operators too, so long text-only streams have a bound.
@@ -339,7 +339,7 @@ enum PDFGraphicScanner {
                    "Tc", "Tw", "Tz", "TL", "Tr", "Ts", "w", "J", "j", "M", "d", "ri", "i",
                    "gs", "sh", "BMC", "BDC", "EMC", "MP", "DP", "BX", "EX", "BI", "ID", "EI"] {
             CGPDFOperatorTableSetCallback(table, op) { scanner, info in
-                _ = context(scanner, info)
+                _ = PDFGraphicScanner.context(scanner, info)
             }
         }
         return table
