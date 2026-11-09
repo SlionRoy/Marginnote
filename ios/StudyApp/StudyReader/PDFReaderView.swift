@@ -7,18 +7,21 @@ struct PDFReaderView: UIViewRepresentable {
     var observesReadingTaps = false
     var onReadingTap: () -> Void = {}
     var onPageTap: (PDFPage, CGPoint) -> Void = { _, _ in }
+    var onVisiblePageChanged: (PDFPage) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> PDFView {
         pdfView.accessibilityIdentifier = "reader.pdfView"
         context.coordinator.install(on: pdfView)
-        context.coordinator.update(reading: observesReadingTaps, action: onReadingTap, pageAction: onPageTap)
+        context.coordinator.update(reading: observesReadingTaps, action: onReadingTap,
+                                   pageAction: onPageTap, visiblePageAction: onVisiblePageChanged)
         return pdfView
     }
 
     func updateUIView(_ uiView: PDFView, context: Context) {
-        context.coordinator.update(reading: observesReadingTaps, action: onReadingTap, pageAction: onPageTap)
+        context.coordinator.update(reading: observesReadingTaps, action: onReadingTap,
+                                   pageAction: onPageTap, visiblePageAction: onVisiblePageChanged)
     }
 
     static func dismantleUIView(_ uiView: PDFView, coordinator: Coordinator) {
@@ -30,7 +33,9 @@ struct PDFReaderView: UIViewRepresentable {
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         private var onTap: () -> Void = {}
         private var onPageTap: (PDFPage, CGPoint) -> Void = { _, _ in }
+        private var onVisiblePageChanged: (PDFPage) -> Void = { _ in }
         private weak var pdfView: PDFView?
+        private weak var lastVisiblePage: PDFPage?
         private lazy var singleTap = UITapGestureRecognizer(target: self, action: #selector(tapped))
         private let doubleTap = UITapGestureRecognizer()
 
@@ -45,22 +50,37 @@ struct PDFReaderView: UIViewRepresentable {
                 view.addGestureRecognizer(recognizer)
             }
             singleTap.require(toFail: doubleTap)
+            NotificationCenter.default.addObserver(self, selector: #selector(visiblePageChanged),
+                name: .PDFViewPageChanged, object: view)
         }
 
         func update(reading: Bool, action: @escaping () -> Void,
-                    pageAction: @escaping (PDFPage, CGPoint) -> Void) {
+                    pageAction: @escaping (PDFPage, CGPoint) -> Void,
+                    visiblePageAction: @escaping (PDFPage) -> Void) {
             onTap = reading ? action : {}
             onPageTap = pageAction
+            onVisiblePageChanged = visiblePageAction
             singleTap.isEnabled = true
             doubleTap.isEnabled = true
+            // Defer callbacks until SwiftUI's view update has completed.
+            Task { @MainActor [weak self] in self?.visiblePageChanged() }
         }
 
         func remove(from view: PDFView) {
             view.removeGestureRecognizer(singleTap)
             view.removeGestureRecognizer(doubleTap)
+            NotificationCenter.default.removeObserver(self, name: .PDFViewPageChanged, object: view)
             onTap = {}
             onPageTap = { _, _ in }
+            onVisiblePageChanged = { _ in }
+            lastVisiblePage = nil
             pdfView = nil
+        }
+
+        @objc private func visiblePageChanged() {
+            guard let page = pdfView?.currentPage, page !== lastVisiblePage else { return }
+            lastVisiblePage = page
+            onVisiblePageChanged(page)
         }
 
         @objc private func tapped() {

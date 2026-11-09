@@ -48,6 +48,25 @@
       "text_layer_pages_1based": [
         1
       ]
+    },
+    {
+      "file": "F5_layout_native.pdf",
+      "description": "Self-authored two-column layouts with native vector Forms",
+      "bytes": 24818,
+      "sha256": "24cccea515d160daa8ffffe75c39d492f65784051fb59211a99223433ada391a",
+      "expected_pages": 2,
+      "text_layer_pages_1based": [
+        1,
+        2
+      ]
+    },
+    {
+      "file": "F6_layout_scanned.pdf",
+      "description": "Rasterized versions of F5, without a text layer",
+      "bytes": 407930,
+      "sha256": "d9cdb6a211cc9702ce4198faf0fbd325ddff9a0d2fa502579a1e4db216eac009",
+      "expected_pages": 2,
+      "text_layer_pages_1based": []
     }
   ]
 }

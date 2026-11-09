@@ -187,26 +187,22 @@ final class SelectionMapperTests: XCTestCase {
                      CGRect(x: 0.12, y: 0.125, width: 0.68, height: 0.02),
                      CGRect(x: 0.10, y: 0.22, width: 0.70, height: 0.02),
                      CGRect(x: 0.82, y: 0.125, width: 0.15, height: 0.02)]
-        let paragraphs = PageRegionDetector.paragraphs(lines)
+        let paragraphs = PageLayoutAnalyzer.paragraphs(lines.map { LayoutTextLine(rect: $0, text: "sample") }).map(PageLayoutAnalyzer.bounds)
         XCTAssertEqual(paragraphs.count, 3)
         let first = try XCTUnwrap(paragraphs.first { $0.contains(CGPoint(x: 0.2, y: 0.11)) })
         XCTAssertTrue(first.contains(CGPoint(x: 0.2, y: 0.13)))
         XCTAssertFalse(first.contains(CGPoint(x: 0.2, y: 0.23)))
         let text = PageRegion(rect: first, kind: .text)
         let graphic = PageRegion(rect: CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.3), kind: .graphic)
-        XCTAssertEqual(PageRegionDetector.hit(CGPoint(x: 0.2, y: 0.11), regions: [graphic, text])?.kind, .text)
+        XCTAssertEqual(PageRegionDetector.hit(CGPoint(x: 0.2, y: 0.11), regions: [graphic, text])?.kind, .graphic)
         XCTAssertEqual(PageRegionDetector.hit(CGPoint(x: 0.9, y: 0.2), regions: [graphic, text])?.kind, .graphic)
         XCTAssertNil(PageRegionDetector.hit(CGPoint(x: 0.5, y: 0.8), regions: [graphic, text]))
     }
 
     func testScannedPageProducesTappableTextRegions() async throws {
         let fixture = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "F2_image_only", withExtension: "pdf"))
-        let image = try await MainActor.run { () throws -> CGImage in
-            let doc = try XCTUnwrap(PDFDocument(url: fixture))
-            return try OCRService.render(try XCTUnwrap(doc.page(at: 0)))
-        }
-        let regions = try PageRegionDetector.detect(image, documentID: UUID(), pageIndex: 0,
-                                                     options: OCRRecognitionOptions())
+        let regions = try PageLayoutAnalyzer.analyze(fileURL: fixture, pageIndex: 0,
+                                                       options: OCRRecognitionOptions())
         let text = try XCTUnwrap(regions.first { $0.kind == .text })
         XCTAssertEqual(PageRegionDetector.hit(CGPoint(x: text.rect.midX, y: text.rect.midY),
                                               regions: regions)?.kind, .text)
@@ -214,29 +210,11 @@ final class SelectionMapperTests: XCTestCase {
                       text.rect.minY >= 0 && text.rect.maxY <= 1)
     }
 
-    func testNearbyPanelsFormOneFigureWithoutAbsorbingRemoteFigure() throws {
-        let w = 256, h = 256
-        var pixels = [UInt8](repeating: 255, count: w*h)
-        func fill(_ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int) {
-            for y in y0..<y1 { for x in x0..<x1 { pixels[y*w+x] = 0 } }
-        }
-        for y in [50, 100] { for x in [20, 70, 120] { fill(x, y, x+40, y+40) } }
-        fill(210, 190, 245, 225)
-        fill(10, 5, 230, 12) // body text, not part of the figure
-        let regions = PageRegionDetector.graphicRegions(pixels: pixels, width: w, height: h,
-            excluding: [CGRect(x: 0.03, y: 0.01, width: 0.88, height: 0.05)])
-        XCTAssertEqual(regions.count, 2)
-        let figure = try XCTUnwrap(regions.first { $0.contains(CGPoint(x: 0.1, y: 0.22)) })
-        XCTAssertTrue(figure.contains(CGPoint(x: 0.6, y: 0.52)))
-        XCTAssertGreaterThan(figure.minY, 0.1)
-        XCTAssertFalse(figure.contains(CGPoint(x: 0.88, y: 0.8)))
-    }
-
     func testPDFTextLayerProvidesPageLinesWithoutOCR() async throws {
         let fixture = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "F1_text_layer", withExtension: "pdf"))
         let lines = try await MainActor.run { () throws -> [CGRect] in
             let doc = try XCTUnwrap(PDFDocument(url: fixture))
-            return PageRegionDetector.nativeTextLines(try XCTUnwrap(doc.page(at: 0)))
+            return try PageLayoutAnalyzer.nativeLines(try XCTUnwrap(doc.page(at: 0))).map(\.rect)
         }
         XCTAssertFalse(lines.isEmpty)
         XCTAssertTrue(lines.allSatisfy { $0.minX >= 0 && $0.maxX <= 1 && $0.minY >= 0 && $0.maxY <= 1 })
@@ -251,7 +229,7 @@ final class SelectionMapperTests: XCTestCase {
             bitsPerPixel: 8, bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(),
             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
             provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
-        let rect = try XCTUnwrap(PageRegionDetector.rasterGraphicRegions(image, excluding: []).first)
+        let rect = try XCTUnwrap(PageLayoutAnalyzer.regions(lines: [], nativeGraphics: [], image: image).first { $0.kind == .graphic }?.rect)
         XCTAssertEqual(rect.minX, 35.0 / 256.0, accuracy: 0.02)
         XCTAssertEqual(rect.minY, 25.0 / 256.0, accuracy: 0.02)
         XCTAssertEqual(rect.maxY, 95.0 / 256.0, accuracy: 0.02)

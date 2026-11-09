@@ -20,9 +20,15 @@ final class StudySession: ObservableObject {
     @Published var ocrOptions = OCRRecognitionOptions()
     @Published private(set) var isDetectingRegion = false
     private var regionRequestID = UUID()
+    private var regionGeneration = UUID()
+    private var regionDocumentURL: URL?
     private var regionWork: Task<[PageRegion], Error>?
+    private var regionWorkPage: Int?
+    private var regionPreparation: Task<Void, Never>?
+    private var regionVisiblePage: Int?
+    private var regionPendingSelection: (pageIndex: Int, point: CGPoint)?
     private var regionCache: [Int: [PageRegion]] = [:]
-    private var nativeLineCache: [Int: [CGRect]] = [:]
+    private var regionCacheOrder: [Int] = []
     private var regionAnnotation: (page: PDFPage, annotation: PDFAnnotation)?
 
     private let store = ExcerptFileStore(
@@ -119,64 +125,126 @@ final class StudySession: ObservableObject {
         }
     }
 
+    // Wait until scrolling settles before preparing the visible page. Only the
+    // file URL crosses into the worker; UI-owned PDFPage/PDFDocument never do.
+    func preparePageRegion(_ page: PDFPage) {
+        guard let document, regionDocumentURL != nil, page.rotation % 360 == 0 else { return }
+        let pageIndex = document.index(for: page)
+        guard pageIndex != NSNotFound, regionVisiblePage != pageIndex else { return }
+        regionVisiblePage = pageIndex
+        regionPreparation?.cancel()
+        regionPreparation = nil
+        if regionPendingSelection?.pageIndex != pageIndex {
+            regionPendingSelection = nil
+            clearRegionSelection()
+        }
+        if regionWorkPage != pageIndex {
+            regionWork?.cancel()
+            regionRequestID = UUID()
+            regionWorkPage = nil
+        }
+        if regionCache[pageIndex] != nil {
+            touchRegionCache(pageIndex)
+            return
+        }
+        guard regionWorkPage != pageIndex else { return }
+        let generation = regionGeneration
+        regionPreparation = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(180)) }
+            catch { return }
+            guard let self, regionGeneration == generation,
+                  regionVisiblePage == pageIndex else { return }
+            beginRegionAnalysis(pageIndex: pageIndex)
+        }
+    }
+
     func selectPageRegion(_ page: PDFPage, point: CGPoint) {
-        guard let document, let documentID, page.rotation % 360 == 0 else { return }
+        guard let document, regionDocumentURL != nil, page.rotation % 360 == 0 else { return }
         let pageIndex = document.index(for: page)
         let bounds = page.bounds(for: .cropBox)
         guard pageIndex != NSNotFound, bounds.width > 0, bounds.height > 0,
               bounds.contains(point) else { return }
         let normalized = CGPoint(x: (point.x - bounds.minX) / bounds.width,
                                  y: (bounds.maxY - point.y) / bounds.height)
-        regionWork?.cancel()
-        regionWork = nil
-        regionRequestID = UUID()
-        let requestID = regionRequestID
+        regionPreparation?.cancel()
+        regionPreparation = nil
         clearRegionSelection()
+        regionPendingSelection = (pageIndex, normalized)
         if let cached = regionCache[pageIndex] {
+            if regionWorkPage != nil, regionWorkPage != pageIndex {
+                regionWork?.cancel()
+                regionRequestID = UUID()
+                regionWorkPage = nil
+            }
+            touchRegionCache(pageIndex)
+            regionPendingSelection = nil
             displayRegion(PageRegionDetector.hit(normalized, regions: cached), on: page)
             return
         }
-        let nativeLines: [CGRect]
-        if let stored = nativeLineCache[pageIndex] { nativeLines = stored }
-        else {
-            nativeLines = PageRegionDetector.nativeTextLines(page)
-            nativeLineCache[pageIndex] = nativeLines
+        isDetectingRegion = true
+        // A second tap updates the requested point without restarting this page.
+        if regionWorkPage == pageIndex { return }
+        beginRegionAnalysis(pageIndex: pageIndex)
+    }
+
+    private func beginRegionAnalysis(pageIndex: Int) {
+        guard let fileURL = regionDocumentURL, let document,
+              pageIndex >= 0, pageIndex < document.pageCount else { return }
+        regionPreparation = nil
+        let predecessor = regionWork
+        predecessor?.cancel()
+        regionRequestID = UUID()
+        let requestID = regionRequestID
+        let generation = regionGeneration
+        regionWorkPage = pageIndex
+        let options = ocrOptions
+        let requestedByTap = regionPendingSelection?.pageIndex == pageIndex
+        isDetectingRegion = requestedByTap
+        let work = Task.detached(priority: requestedByTap ? .userInitiated : .utility) {
+            // Cancellation may not interrupt an active system OCR call. Wait
+            // for it to exit before opening another page to keep CPU work bounded.
+            if let predecessor { _ = await predecessor.result }
+            try Task.checkCancellation()
+            return try PageLayoutAnalyzer.analyze(fileURL: fileURL, pageIndex: pageIndex,
+                                                  options: options)
         }
-        let textRegions = PageRegionDetector.paragraphs(nativeLines).map {
-            PageRegion(rect: $0, kind: .text)
-        }
-        if let text = PageRegionDetector.hit(normalized, regions: textRegions) {
-            displayRegion(text, on: page)
-            return
-        }
-        do {
-            let image = try OCRService.render(page, maxDimension: 1024)
-            let options = ocrOptions
-            isDetectingRegion = true
-            let work = Task.detached(priority: .userInitiated) {
-                try PageRegionDetector.detect(image, documentID: documentID,
-                                              pageIndex: pageIndex, options: options,
-                                              nativeLines: nativeLines)
-            }
-            regionWork = work
-            Task {
-                do {
-                    let regions = try await work.value
-                    guard regionRequestID == requestID, self.document === document else { return }
-                    isDetectingRegion = false
-                    regionWork = nil
-                    regionCache[pageIndex] = regions
-                    displayRegion(PageRegionDetector.hit(normalized, regions: regions), on: page)
-                } catch {
-                    guard regionRequestID == requestID else { return }
-                    isDetectingRegion = false
-                    regionWork = nil
+        regionWork = work
+        Task { [weak self] in
+            do {
+                let regions = try await work.value
+                guard let self, regionGeneration == generation,
+                      regionRequestID == requestID else { return }
+                regionWork = nil
+                regionWorkPage = nil
+                isDetectingRegion = false
+                regionCache[pageIndex] = regions
+                touchRegionCache(pageIndex)
+                if let pending = regionPendingSelection, pending.pageIndex == pageIndex,
+                   let page = self.document?.page(at: pageIndex) {
+                    regionPendingSelection = nil
+                    displayRegion(PageRegionDetector.hit(pending.point, regions: regions), on: page)
+                }
+            } catch {
+                guard let self, regionGeneration == generation,
+                      regionRequestID == requestID else { return }
+                regionWork = nil
+                regionWorkPage = nil
+                isDetectingRegion = false
+                let wasRequested = regionPendingSelection?.pageIndex == pageIndex
+                if wasRequested { regionPendingSelection = nil }
+                // Speculative preparation failures must not interrupt reading.
+                if wasRequested, !(error is CancellationError) {
                     errorMessage = error.localizedDescription
                 }
             }
-        } catch {
-            isDetectingRegion = false
-            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func touchRegionCache(_ pageIndex: Int) {
+        regionCacheOrder.removeAll { $0 == pageIndex }
+        regionCacheOrder.append(pageIndex)
+        while regionCacheOrder.count > 8 {
+            regionCache.removeValue(forKey: regionCacheOrder.removeFirst())
         }
     }
 
@@ -197,7 +265,7 @@ final class StudySession: ObservableObject {
             .insetBy(dx: -3, dy: -3).intersection(pageBounds)
         guard !rectangle.isNull, !rectangle.isEmpty else { return }
         let annotation = PDFAnnotation(bounds: rectangle, forType: .square, withProperties: nil)
-        annotation.color = region.kind == .text ? .systemBlue : .systemPurple
+        annotation.color = region.kind == .graphic ? .systemPurple : .systemBlue
         annotation.interiorColor = .clear
         let border = PDFBorder()
         border.style = .dashed
@@ -296,11 +364,17 @@ final class StudySession: ObservableObject {
 
     private func open(_ pdf: PDFDocument, imported: ImportedPDF) {
         regionWork?.cancel()
-        regionWork = nil
+        regionPreparation?.cancel()
+        regionPreparation = nil
         regionRequestID = UUID()
+        regionGeneration = UUID()
+        regionDocumentURL = imported.fileURL
+        regionWorkPage = nil
+        regionVisiblePage = nil
+        regionPendingSelection = nil
         clearRegionSelection()
         regionCache.removeAll()
-        nativeLineCache.removeAll()
+        regionCacheOrder.removeAll()
         clearAnnotations()
         document = pdf
         documentID = imported.id
@@ -310,6 +384,7 @@ final class StudySession: ObservableObject {
         ocrCandidates = []
         ocrPageImage = nil
         showingOCRResults = false
+        if let page = pdf.page(at: 0) { preparePageRegion(page) }
     }
 
     private func reloadExcerpts() async {

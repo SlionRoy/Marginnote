@@ -35,6 +35,9 @@ struct ContentView: View {
                                       onReadingTap: { showingReadingControls.toggle() },
                                       onPageTap: { page, point in
                                           session.selectPageRegion(page, point: point)
+                                      },
+                                      onVisiblePageChanged: { page in
+                                          session.preparePageRegion(page)
                                       })
                         if sizeClass == .regular && !isImmersive {
                             Divider()
