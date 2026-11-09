@@ -183,8 +183,8 @@ enum PDFGraphicScanner {
         guard CGPDFDictionaryGetName(dictionary, "Subtype", &type), let type else { return }
         switch String(cString: type) {
         case "Image":
-            var mask: CGPDFBoolean = false
-            if CGPDFDictionaryGetBoolean(dictionary, "ImageMask", &mask), mask { return }
+            var mask: CGPDFBoolean = 0
+            if CGPDFDictionaryGetBoolean(dictionary, "ImageMask", &mask), mask != 0 { return }
             let rect = CGRect(x: 0, y: 0, width: 1, height: 1).applying(context.state.transform)
             if let region = normalized(rect, context: context) {
                 context.regions.append(region)
