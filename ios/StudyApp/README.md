@@ -39,13 +39,21 @@
 `immersive-reading-check` 独立检查全屏区域、单击显示、自动隐藏与退出恢复，导出截图；它不作为 IPA 打包依赖。完整 OCR UI 仍手动可选。
 
 
-## 页面自动区域候选（0.4）
+## 页面自动区域候选（历史 0.4，已被 0.6 替换）
 
 点击 PDF 页面时，会在本机识别当前页文字并按行间距、水平重叠合并成段落候选，同时尝试查找视觉显著的图形候选；点中候选时显示蓝色（文字）或紫色（图形）虚线框。首次分析可能需要等待；结果只缓存当前文档，点击空白可清除框。虚线框是临时显示，不写回原 PDF，也不会自动创建摘录。使用 PDF 原有选字或“识别本页”仍可摘录。
 
 这是实验性候选，并非保证精确的版面分析：多栏、表格、图中的文字和复杂图表可能误分或漏掉；视觉显著性不保证覆盖整张图表。旋转页暂不执行此功能。文字在图形上时优先选择文字候选。请在真实设备和不同 PDF 上手动测试。
 
 
-## 页面区域检测（0.5）
+## 页面区域检测（历史 0.5，已被 0.6 替换）
 
 文字层页面优先使用 PDF 自带行坐标；触摸文字候选可直接显示边框。无文字层页面只做行级快速识别。点击非文字区域时用低分辨率页面图像分析，遮盖文字行后尝试合并相邻图形面板；结果仅缓存于本次打开的文档。此规则在多栏、浅色图、表格或密集页面可能合并过度或漏检，需用户实测；旋转页依旧不支持。扫描页的快速识别可能影响文字框精度。虚线框仍不直接创建摘录。
+
+## Page layout 0.6 (experimental)
+
+The current implementation builds page regions before hit testing. Native graphic-bearing PDF Forms preserve their internal labels; independent image panels and scanned/vector pages also use prose barriers, caption anchors and spatial grouping. The selectable hierarchy gives a complete figure priority over internal text. Body paragraphs and captions remain outside figures; isolated running heads/feet are excluded from ordinary selection.
+
+Visible pages are prepared after a short delay. Repeated taps reuse one task and an eight-page cache. Background work opens a separate local PDFDocument; no document is uploaded for OCR. Region analysis remains a geometric heuristic, especially for uncaptioned figures, complex clipping, tightly packed pages and unusual layouts. Rotated pages remain unsupported. Dashed regions are temporary and do not yet create excerpts directly.
+
+The F5/F6 tests save four annotated page images and JSON measurements, with expected regions authored independently from the detector. Passing these synthetic cases does not establish accuracy on arbitrary papers or real-device performance.

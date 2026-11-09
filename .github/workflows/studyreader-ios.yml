@@ -47,6 +47,9 @@ jobs:
             -destination "platform=iOS Simulator,id=$device_id,arch=arm64" \
             -parallel-testing-enabled NO \
             -only-testing:StudyReaderTests \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 60 \
+            -maximum-test-execution-time-allowance 120 \
             ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
             -resultBundlePath TestResults/StudyReader.xcresult \

@@ -33,7 +33,7 @@ final class PageLayoutTests: XCTestCase {
     }
 
     @MainActor
-    func testNativeAndScannedComplexLayouts() throws {
+    func testNativeAndScannedComplexLayouts() async throws {
         var results: [PageResult] = []
         for fixture in ["F5_layout_native", "F6_layout_scanned"] {
             let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: fixture, withExtension: "pdf"))
@@ -43,8 +43,12 @@ final class PageLayoutTests: XCTestCase {
                 let started = Date()
                 var regions: [PageRegion] = [], failure: String?
                 do {
-                    regions = try PageLayoutAnalyzer.analyze(fileURL: url, pageIndex: pageIndex,
-                        options: OCRRecognitionOptions(language: .english))
+                    print("LAYOUT_START \(fixture) page \(pageIndex + 1)")
+                    // Match production: isolate parsing and Vision from the main actor.
+                    regions = try await Task.detached {
+                        try PageLayoutAnalyzer.analyze(fileURL: url, pageIndex: pageIndex,
+                            options: OCRRecognitionOptions(language: .english))
+                    }.value
                 } catch { failure = String(describing: error) }
                 let result = PageResult(fixture: fixture, pageIndex: pageIndex,
                     regions: regions, expected: Self.blocks(pageIndex),

@@ -1,5 +1,7 @@
 # 自制 PDF 验收材料
 
+新增 F5/F6：`scripts/generate_layout_fixtures.py` 使用现有 PyMuPDF 绘制的两页复杂版面，分别为原生文字/矢量 Form 和扫描图像版。包含整图内部标签、双栏正文/图注、栏内图、两个独立图、公式、页眉页脚。`layout_expected.json` 是绘制规格中的人工预期框，不由检测算法生成。脚本重复生成的文件哈希一致；图像预览用于人工核验。它们是独立合成测试材料，不包含用户截图、私有 PDF 或原 IPA 资源，不能证明真实论文的识别准确率。
+
 四份 PDF 由 `scripts/build_pdf_fixtures.py` 使用 Codex 预装的 Python PDF 运行环境生成，没有读取或复制原 IPA 内容。`manifest.json` 记录各文件 SHA-256、页数、文字层页码及预期语句。可用同一运行环境执行 `scripts/verify_pdf_fixtures.py` 复核结构和文字层；生成脚本需要 Windows 的 `C:\Windows\Fonts\msyh.ttc`，因此跨系统重建前应替换为获授权的等效字体。
 
 | 文件 | 预期性质 | 对应验收 |
